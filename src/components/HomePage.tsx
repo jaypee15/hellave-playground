@@ -1,13 +1,12 @@
 import { useState, type FormEvent } from "react";
 
 interface Props {
-  onCreated: (peerId: string, displayName: string) => Promise<void>;
-  onJoined: (roomInstanceId: string, peerId: string, displayName: string) => Promise<void>;
+  onCreated: (displayName: string) => Promise<void>;
+  onJoined: (roomInstanceId: string, displayName: string) => Promise<void>;
 }
 
 export default function HomePage({ onCreated, onJoined }: Props) {
   const [mode, setMode] = useState<"choose" | "create" | "join">("choose");
-  const [peerId, setPeerId] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [roomInstanceId, setRoomInstanceId] = useState("");
   const [error, setError] = useState("");
@@ -18,7 +17,7 @@ export default function HomePage({ onCreated, onJoined }: Props) {
     setError("");
     setLoading(true);
     try {
-      await onCreated(peerId, displayName);
+      await onCreated(displayName);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Unknown error");
       setLoading(false);
@@ -30,7 +29,7 @@ export default function HomePage({ onCreated, onJoined }: Props) {
     setError("");
     setLoading(true);
     try {
-      await onJoined(roomInstanceId, peerId, displayName);
+      await onJoined(roomInstanceId, displayName);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Unknown error");
       setLoading(false);
@@ -65,13 +64,6 @@ export default function HomePage({ onCreated, onJoined }: Props) {
         required
         style={inputStyle}
       />
-      <input
-        placeholder="Peer ID (e.g. user-alice)"
-        value={peerId}
-        onChange={(e) => setPeerId(e.target.value)}
-        required
-        style={inputStyle}
-      />
       <button type="submit" disabled={loading} style={btnStyle}>
         {loading ? "Creating..." : "Create & Join"}
       </button>
@@ -90,13 +82,6 @@ export default function HomePage({ onCreated, onJoined }: Props) {
         placeholder="Your name"
         value={displayName}
         onChange={(e) => setDisplayName(e.target.value)}
-        required
-        style={inputStyle}
-      />
-      <input
-        placeholder="Peer ID (e.g. user-bob)"
-        value={peerId}
-        onChange={(e) => setPeerId(e.target.value)}
         required
         style={inputStyle}
       />
