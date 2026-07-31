@@ -95,7 +95,8 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
     onLeave();
   };
 
-  const roomIdShort = roomId.length > 12 ? `${roomId.slice(0, 12)}...` : roomId;
+  // Show the full Room Instance ID: it is what a joiner pastes into "Join a Room".
+  // roomId is the short application-level id and is not enough to join.
 
   const stateColor = state === "admitted" ? "#16a34a"
     : state === "denied" || state === "failed" ? "#dc2626"
@@ -105,7 +106,9 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
     <div style={{ maxWidth: 800, margin: "20px auto", padding: "0 16px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
         <div>
-          <strong>Room:</strong> {roomIdShort}
+          <strong>Room Instance:</strong>{" "}
+          <code data-testid="room-instance-id">{roomInstanceId}</code>
+          <span style={{ marginLeft: 16 }}><strong>Room:</strong> {roomId}</span>
           <span style={{ marginLeft: 16 }}>
             <strong>Status:</strong>{" "}
             <span style={{ color: stateColor }}>{state}</span>
