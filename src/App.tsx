@@ -5,7 +5,13 @@ import ConferenceRoom from "./components/ConferenceRoom.js";
 
 type Screen =
   | { name: "home" }
-  | { name: "conference"; client: HellaveClient; roomId: string; peerId: string };
+  | {
+      name: "conference";
+      client: HellaveClient;
+      roomId: string;
+      roomInstanceId: string;
+      peerId: string;
+    };
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>({ name: "home" });
@@ -20,14 +26,13 @@ export default function App() {
       const err = await res.json();
       throw new Error(err.error ?? "Failed to create room");
     }
-    const { token, roomInstanceId, peerId } = await res.json();
-    const roomId = roomInstanceId;
+    const { token, roomInstanceId, roomId, peerId } = await res.json();
     const config: HellaveConfig = {
       controlUrl: "https://hellave-api.maiaddy.com",
       tokenProvider: async () => ({ token }),
     };
     const client = new HellaveClient(config);
-    setScreen({ name: "conference", client, roomId, peerId });
+    setScreen({ name: "conference", client, roomId, roomInstanceId, peerId });
   }, []);
 
   const handleJoined = useCallback(async (roomInstanceId: string, displayName: string) => {
@@ -40,14 +45,13 @@ export default function App() {
       const err = await res.json();
       throw new Error(err.error ?? "Failed to join room");
     }
-    const { token, peerId } = await res.json();
-    const roomId = roomInstanceId;
+    const { token, roomId, peerId } = await res.json();
     const config: HellaveConfig = {
       controlUrl: "https://hellave-api.maiaddy.com",
       tokenProvider: async () => ({ token }),
     };
     const client = new HellaveClient(config);
-    setScreen({ name: "conference", client, roomId, peerId });
+    setScreen({ name: "conference", client, roomId, roomInstanceId, peerId });
   }, []);
 
   if (screen.name === "home") {
@@ -58,6 +62,7 @@ export default function App() {
     <ConferenceRoom
       client={screen.client}
       roomId={screen.roomId}
+      roomInstanceId={screen.roomInstanceId}
       peerId={screen.peerId}
       onLeave={() => setScreen({ name: "home" })}
     />

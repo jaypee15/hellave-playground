@@ -66,7 +66,15 @@ app.post("/api/join-room", async (req, res) => {
       },
       lobby: false,
     });
-    res.json({ token: token.token, expiresAt: token.expiresAt, peerId });
+    // The browser needs the application roomId for attach(): it is validated against
+    // room_id in the authoritative snapshot. A joiner only supplies the room *instance*
+    // id, so read the roomId out of the token we just minted.
+    res.json({
+      token: token.token,
+      expiresAt: token.expiresAt,
+      peerId,
+      roomId: roomIdFromToken(token.token),
+    });
   } catch (err: unknown) {
     const status = err instanceof Error && "status" in err
       ? (err as { status: number }).status
@@ -74,6 +82,26 @@ app.post("/api/join-room", async (req, res) => {
     res.status(status).json({ error: err instanceof Error ? err.message : "Unknown error" });
   }
 });
+
+/**
+ * Read the `room_id` claim from a meeting token.
+ *
+ * Not a security check — the token was just issued by the Hellave API over TLS and is
+ * passed straight back to our own frontend. It only avoids a second round trip to learn
+ * the application roomId that attach() requires.
+ */
+function roomIdFromToken(token: string): string | null {
+  const payload = token.split(".")[1];
+  if (!payload) return null;
+  try {
+    const claims = JSON.parse(
+      Buffer.from(payload, "base64url").toString("utf8"),
+    ) as { room_id?: unknown };
+    return typeof claims.room_id === "string" ? claims.room_id : null;
+  } catch {
+    return null;
+  }
+}
 
 function slugify(name: string): string {
   const base = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");

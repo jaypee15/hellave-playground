@@ -6,6 +6,7 @@ import EventsPanel from "./EventsPanel.js";
 interface Props {
   client: HellaveClient;
   roomId: string;
+  roomInstanceId: string;
   peerId: string;
   onLeave: () => void;
 }
@@ -15,7 +16,7 @@ interface LogEvent {
   msg: string;
 }
 
-export default function ConferenceRoom({ client, roomId, peerId, onLeave }: Props) {
+export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId, onLeave }: Props) {
   const [conference, setConference] = useState<Conference | null>(null);
   const [state, setState] = useState<ConferenceState>("waiting");
   const [participants, setParticipants] = useState<Array<{ id: string; displayName: string; role: string }>>([]);
@@ -36,7 +37,7 @@ export default function ConferenceRoom({ client, roomId, peerId, onLeave }: Prop
     (async () => {
       try {
         addEvent("Attaching to room...");
-        const conf = await client.attach({ roomId, roomInstanceId: "attach" });
+        const conf = await client.attach({ roomId, roomInstanceId });
         if (cancelled) return;
         setConference(conf);
         setState(conf.state);
@@ -75,7 +76,7 @@ export default function ConferenceRoom({ client, roomId, peerId, onLeave }: Prop
       }
     })();
     return () => { cancelled = true; };
-  }, [client, roomId, addEvent]);
+  }, [client, roomId, roomInstanceId, addEvent]);
 
   const handlePublish = async () => {
     if (!conference) return;
