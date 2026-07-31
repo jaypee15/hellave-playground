@@ -1,0 +1,23 @@
+app = "hellave-playground"
+primary_region = "arn"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 3001
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "10s"
+  method = "GET"
+  path = "/"
+
+[env]
+  HELLAVE_BASE_URL = "https://hellave-api.maiaddy.com"
+  PORT = "3001"

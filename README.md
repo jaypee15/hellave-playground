@@ -13,10 +13,15 @@ A React playground for testing the Hellave real-time communication SDK.
 # Install dependencies
 npm install
 
-# Set your Hellave API key
-cp .env .env.local
-# Edit .env.local with your HELLAVE_API_KEY
+# Set your Hellave API key in .env (git-ignored):
+#   HELLAVE_API_KEY=<your key>
+#   HELLAVE_BASE_URL=https://hellave-api.maiaddy.com
 ```
+
+`npm run dev:server` loads `.env` via `tsx --env-file-if-exists=.env`, so a missing
+`.env` is fine when the variables are already in the environment. Note that an empty
+`HELLAVE_API_KEY=` counts as unset and the server exits with
+`HELLAVE_API_KEY is required`.
 
 ## Development
 
@@ -34,7 +39,42 @@ Open http://localhost:5173
 
 ```bash
 npm run build
-HELLAVE_API_KEY=your-key HELLAVE_BASE_URL=https://hellave-api.maiaddy.com node server/index.js
+npm start          # reads .env if present
+```
+
+`npm start` runs the same entrypoint as `dev:server` and serves the built
+frontend from `dist/`. Environment variables already present in the environment
+win, so no `.env` file is needed:
+
+```bash
+HELLAVE_API_KEY=your-key HELLAVE_BASE_URL=https://hellave-api.maiaddy.com npm start
+```
+
+## Deployment
+
+The image is self-contained: express serves both the `/api` routes and the built
+frontend from `dist/`, so there is no separate static host and no CORS to configure.
+`PORT` is read from the environment (`server/index.ts`), falling back to 3001.
+
+Set `HELLAVE_API_KEY` as a **secret**, never as a plain env var — it authenticates
+every backend call to the Hellave API.
+
+```bash
+# Fly
+fly secrets set HELLAVE_API_KEY=<key>
+fly deploy                      # uses fly.toml + Dockerfile
+
+# Render: create a service with runtime "Docker", then set
+#   HELLAVE_API_KEY   (secret)
+#   HELLAVE_BASE_URL  https://hellave-api.maiaddy.com
+# PORT is injected automatically.
+```
+
+Build locally the way the platform does, to catch host-specific breakage early:
+
+```bash
+docker build -t hellave-playground .
+docker run --rm -p 3001:3001 -e HELLAVE_API_KEY=<key> hellave-playground
 ```
 
 ## Usage

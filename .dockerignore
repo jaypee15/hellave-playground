@@ -1,0 +1,17 @@
+# Never copy the host's node_modules: it contains a symlinked @hellave/js-sdk that
+# dangles inside the image and shadows the freshly installed package.
+node_modules
+dist
+
+.git
+.gitignore
+
+# Secrets must not end up in image layers.
+.env
+.env.*
+
+*.log
+npm-debug.log*
+Dockerfile
+.dockerignore
+README.md
