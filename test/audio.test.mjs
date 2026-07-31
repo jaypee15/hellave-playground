@@ -96,6 +96,44 @@ async function waitFor(fn, predicate, timeoutMs, label) {
   throw new Error(`${label} — last observed: ${JSON.stringify(last)}`);
 }
 
+/**
+ * Dump why media failed: ICE state, candidate types on both sides, and STUN check counts.
+ * A pair with many requests and zero responses means the far side is unreachable — usually a
+ * closed UDP port rather than anything wrong with the negotiation.
+ */
+async function iceDiagnostics(page) {
+  return page.evaluate(async () => {
+    const out = [];
+    for (const pc of window.__hellavePCs ?? []) {
+      const info = {
+        ice: pc.iceConnectionState,
+        connection: pc.connectionState,
+        gathering: pc.iceGatheringState,
+        sendersWithTrack: pc.getSenders().filter((s) => s.track).length,
+        pairs: [],
+        local: [],
+        remote: [],
+      };
+      (await pc.getStats()).forEach((r) => {
+        if (r.type === "candidate-pair") {
+          info.pairs.push({
+            state: r.state,
+            nominated: r.nominated,
+            requestsSent: r.requestsSent,
+            responsesReceived: r.responsesReceived,
+          });
+        }
+        if (r.type === "local-candidate") info.local.push(`${r.candidateType}/${r.protocol}`);
+        if (r.type === "remote-candidate") {
+          info.remote.push(`${r.candidateType}/${r.protocol}:${r.port}`);
+        }
+      });
+      out.push(info);
+    }
+    return out;
+  });
+}
+
 async function newPage(label) {
   const context = await browser.newContext({ permissions: ["microphone"] });
   const page = await context.newPage();
@@ -184,35 +222,32 @@ describe("audio through the SFU", () => {
     await publish.waitFor({ timeout: 60_000 });
     await publish.click();
 
-    // Diagnostics first: if publish failed, the UI event log says why, and a zero peer
-    // connection count would mean the spy — not the SDK — is at fault.
-    const hostDiag = await host.evaluate(() => ({
-      peerConnections: (window.__hellavePCs ?? []).length,
-      states: (window.__hellavePCs ?? []).map((pc) => ({
-        connection: pc.connectionState,
-        ice: pc.iceConnectionState,
-        signaling: pc.signalingState,
-        senders: pc.getSenders().filter((s) => s.track).length,
-      })),
-    }));
-    const hostEvents = await host.locator("body").innerText();
-    process.stderr.write(`\n[host diagnostics] ${JSON.stringify(hostDiag)}\n`);
-    process.stderr.write(`[host page text]\n${hostEvents.slice(0, 1200)}\n\n`);
-
-    const sent = await waitFor(
-      () => outboundAudio(host),
-      (t) => t.packetsSent > 0,
-      MEDIA_WAIT_MS,
-      "host never sent audio RTP to the SFU",
-    );
+    let sent;
+    try {
+      sent = await waitFor(
+        () => outboundAudio(host),
+        (t) => t.packetsSent > 0,
+        MEDIA_WAIT_MS,
+        "host never sent audio RTP to the SFU",
+      );
+    } catch (error) {
+      const diag = await iceDiagnostics(host);
+      throw new Error(`${error.message}\n  host ICE: ${JSON.stringify(diag)}`);
+    }
     assert.ok(sent.packetsSent > 0, `host sent no audio: ${JSON.stringify(sent)}`);
 
-    const received = await waitFor(
-      () => inboundAudio(guest),
-      (t) => t.packetsReceived > 0,
-      MEDIA_WAIT_MS,
-      "guest never received audio RTP from the SFU",
-    );
+    let received;
+    try {
+      received = await waitFor(
+        () => inboundAudio(guest),
+        (t) => t.packetsReceived > 0,
+        MEDIA_WAIT_MS,
+        "guest never received audio RTP from the SFU",
+      );
+    } catch (error) {
+      const diag = await iceDiagnostics(guest);
+      throw new Error(`${error.message}\n  guest ICE: ${JSON.stringify(diag)}`);
+    }
     assert.ok(
       received.bytesReceived > 0,
       `guest received no audio bytes: ${JSON.stringify(received)}`,
