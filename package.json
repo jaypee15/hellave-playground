@@ -10,7 +10,7 @@
     "start": "tsx --env-file-if-exists=.env server/index.ts"
   },
   "dependencies": {
-    "@hellave/js-sdk": "file:vendor/hellave-js-sdk-0.5.1.tgz",
+    "@hellave/js-sdk": "file:vendor/hellave-js-sdk-0.5.2.tgz",
     "express": "^4.21.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
