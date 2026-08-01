@@ -52,20 +52,24 @@ app.post("/api/join-room", async (req, res) => {
       return;
     }
     const peerId = slugify(displayName);
+    const role = req.body["role"] ?? "participant";
+    const isHost = role === "host";
     const token = await api.issueMeetingToken(roomInstanceId, {
       peerId,
       sessionId: crypto.randomUUID(),
       profile: { displayName, avatarUrl: null },
-      role: req.body["role"] ?? "participant",
+      role,
       capabilities: {
         publishAudio: true,
         publishVideo: true,
         shareScreen: true,
         sendMessages: true,
-        moderateLobby: false,
-        moderateParticipants: false,
-        setSpotlight: false,
-        controlRecording: false,
+        moderateLobby: isHost,
+        moderateParticipants: isHost,
+        setSpotlight: isHost,
+        // Follows the role, matching createMeeting. Signaling additionally requires the host
+        // role, so granting this to a participant would be refused anyway.
+        controlRecording: isHost,
         updateProfile: true,
       },
       // Placed in the lobby when the caller says the room requires admission; the host then

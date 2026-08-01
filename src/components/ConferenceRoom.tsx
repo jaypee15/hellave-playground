@@ -36,6 +36,12 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
   const [spotlight, setSpotlight] = useState<string | null>(null);
   const [canModerateLobby, setCanModerateLobby] = useState(false);
   const [canSetSpotlight, setCanSetSpotlight] = useState(false);
+  const [canControlRecording, setCanControlRecording] = useState(false);
+  const [recording, setRecording] = useState<{ active: boolean; recordingId: string | null }>({
+    active: false,
+    recordingId: null,
+  });
+  const [recordingBusy, setRecordingBusy] = useState(false);
   const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([]);
   const [chat, setChat] = useState<Array<{ from: string; body: string; at: number }>>([]);
   const [draft, setDraft] = useState("");
@@ -80,6 +86,7 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
           if (me) {
             setCanModerateLobby(me.capabilities.moderateLobby);
             setCanSetSpotlight(me.capabilities.setSpotlight);
+            setCanControlRecording(me.capabilities.controlRecording);
           }
           addEvent(
             `Snapshot updated: ${list.length} participants` +
@@ -103,6 +110,11 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
         conf.on("handRaisedChanged", (participantId, raised) => {
           setRaisedHands(new Set(conf.raisedHands));
           addEvent(`${participantId} ${raised ? "raised" : "lowered"} their hand`);
+        });
+
+        conf.on("recordingChanged", (active, recordingId) => {
+          setRecording({ active, recordingId });
+          addEvent(active ? `Recording started (${recordingId ?? "no id"})` : "Recording stopped");
         });
 
         conf.on("reactionReceived", (reaction) => {
@@ -267,6 +279,24 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
     }
   };
 
+  const handleToggleRecording = async () => {
+    if (!conference || recordingBusy) return;
+    // Held across the await so a double click cannot put two commands in flight; the SDK
+    // would refuse the second, but a disabled button explains itself better than an error.
+    setRecordingBusy(true);
+    try {
+      if (recording.active) {
+        await conference.stopRecording();
+      } else {
+        await conference.startRecording();
+      }
+    } catch (err: unknown) {
+      addEvent(`Recording failed: ${err instanceof Error ? err.message : "Unknown"}`);
+    } finally {
+      setRecordingBusy(false);
+    }
+  };
+
   const handleLeave = () => {
     client.leave();
     onLeave();
@@ -319,9 +349,39 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
           >
             {handRaised ? "Lower Hand" : "Raise Hand"}
           </button>
+          {canControlRecording && (
+            <button
+              onClick={() => void handleToggleRecording()}
+              disabled={recordingBusy || state !== "admitted"}
+              style={{ ...btnStyle, background: recording.active ? "#dc2626" : "#0f766e" }}
+              data-testid="recording-toggle"
+            >
+              {recordingBusy ? "Working..." : recording.active ? "Stop Recording" : "Record"}
+            </button>
+          )}
           <button onClick={handleLeave} style={{ ...btnStyle, background: "#6b7280" }}>Leave</button>
         </div>
       </div>
+
+      {recording.active && (
+        <div
+          data-testid="recording-indicator"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            border: "1px solid #dc2626",
+            borderRadius: 6,
+            padding: "8px 12px",
+            marginBottom: 16,
+            color: "#dc2626",
+          }}
+        >
+          <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#dc2626" }} />
+          <strong>This room is being recorded</strong>
+          {recording.recordingId && <code>{recording.recordingId}</code>}
+        </div>
+      )}
 
       {error && <p style={{ color: "red", marginBottom: 16 }}>{error}</p>}
 
