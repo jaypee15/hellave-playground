@@ -24,6 +24,7 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
   const [muted, setMuted] = useState(false);
   const [remoteTracks, setRemoteTracks] = useState<Array<{ participantId: string; stream: MediaStream }>>([]);
   const [error, setError] = useState("");
+  const [mediaPath, setMediaPath] = useState("");
   const eventsRef = useRef<LogEvent[]>([]);
   const [, forceUpdate] = useState(0);
 
@@ -78,6 +79,30 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
     return () => { cancelled = true; };
   }, [client, roomId, roomInstanceId, addEvent]);
 
+  // Poll the transport so the actual ICE path is visible: "relay/tcp" means media is going
+  // through TURN, which is the fallback for networks that block UDP.
+  useEffect(() => {
+    if (!conference || !publishing) return;
+    let cancelled = false;
+    const timer = setInterval(() => {
+      void conference
+        .requestDiagnostics()
+        .then((d) => {
+          if (cancelled) return;
+          const path = `${d.candidateType}/${d.protocol}`;
+          setMediaPath((previous) => {
+            if (previous !== path) addEvent(`Media path: ${path} (${d.quality})`);
+            return path;
+          });
+        })
+        .catch(() => {});
+    }, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [conference, publishing, addEvent]);
+
   const handlePublish = async () => {
     if (!conference) return;
     try {
@@ -114,6 +139,12 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
             <span style={{ color: stateColor }}>{state}</span>
           </span>
           <span style={{ marginLeft: 16 }}><strong>You:</strong> {peerId}</span>
+          {mediaPath && (
+            <span style={{ marginLeft: 16 }}>
+              <strong>Path:</strong>{" "}
+              <code data-testid="media-path">{mediaPath}</code>
+            </span>
+          )}
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           {state === "admitted" && !publishing && (

@@ -252,5 +252,29 @@ describe("audio through the SFU", () => {
       received.bytesReceived > 0,
       `guest received no audio bytes: ${JSON.stringify(received)}`,
     );
+
+    // Record which path media actually took. AUDIO_EXPECT_PATH=relay asserts the TURN
+    // fallback specifically — used when UDP to the SFU is deliberately blocked.
+    const [hostPath, guestPath] = await Promise.all([
+      iceDiagnostics(host),
+      iceDiagnostics(guest),
+    ]);
+    const selected = (diag) =>
+      diag.flatMap((pc) => pc.remote.map((r) => r)).join(",") || "none";
+    process.stderr.write(
+      `\n[media path] host locals=${JSON.stringify(hostPath.map((p) => p.local))} ` +
+        `remote=${selected(hostPath)}\n[media path] guest locals=` +
+        `${JSON.stringify(guestPath.map((p) => p.local))} remote=${selected(guestPath)}\n`,
+    );
+
+    const expected = process.env["AUDIO_EXPECT_PATH"];
+    if (expected) {
+      const uiPath = await host.getByTestId("media-path").innerText({ timeout: 30_000 });
+      assert.match(
+        uiPath,
+        new RegExp(expected),
+        `expected the media path to be ${expected}, got ${uiPath}`,
+      );
+    }
   });
 });
