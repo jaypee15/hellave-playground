@@ -277,4 +277,37 @@ describe("audio through the SFU", () => {
       );
     }
   });
+
+  it("records a room once media is flowing", CASE_TIMEOUT, async () => {
+    // Lives here rather than in the lifecycle suite because the recording service attaches an
+    // egress to the room on its SFU, and that room only exists once someone has published.
+    const host = await newPage("record-host");
+    await host.goto(ORIGIN);
+    await host.getByRole("button", { name: "Create a Room" }).click();
+    await host.getByPlaceholder("Your name").fill("record-host");
+    await host.getByRole("button", { name: /Create & Join|Creating/ }).click();
+    await host.getByTestId("room-instance-id").waitFor({ timeout: 60_000 });
+
+    const publish = host.getByRole("button", { name: "Publish Mic" });
+    await publish.waitFor({ timeout: 60_000 });
+    await publish.click();
+    await waitFor(
+      () => outboundAudio(host),
+      (t) => t.packetsSent > 0,
+      MEDIA_WAIT_MS,
+      "host never sent audio RTP, so there is nothing to record",
+    );
+
+    // Only a host is offered this, so its presence also confirms the token's capability.
+    const record = host.getByTestId("recording-toggle");
+    await record.waitFor({ timeout: 30_000 });
+    await record.click();
+
+    await host.getByTestId("recording-indicator").waitFor({ timeout: 60_000 });
+
+    await host.getByTestId("recording-toggle").click();
+    await host
+      .getByTestId("recording-indicator")
+      .waitFor({ state: "detached", timeout: 60_000 });
+  });
 });

@@ -27,12 +27,15 @@ app.post("/api/create-room", async (req, res) => {
     }
     const peerId = slugify(displayName);
     // A room with the lobby on makes joiners wait for admission, which is what exercises
-    // the backend's lobby_admission capability. The creator is a host so they can admit.
+    // the backend's lobby_admission capability.
     const lobbyEnabled = req.body["lobbyEnabled"] === true;
     const result = await api.createMeeting({
       peerId,
       displayName,
-      role: req.body["role"] ?? (lobbyEnabled ? "host" : "participant"),
+      // Whoever creates the room is its host. This used to depend on lobbyEnabled, which left
+      // the creator of an ordinary room unable to admit, spotlight or record in the room they
+      // had just made.
+      role: req.body["role"] ?? "host",
       policy: { lobbyEnabled },
     });
     res.json({ ...result, peerId, lobbyEnabled });

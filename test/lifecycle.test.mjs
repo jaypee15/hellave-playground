@@ -345,6 +345,34 @@ describe("playground lifecycle", () => {
     );
   });
 
+  // The successful start/stop path lives in test/audio.test.mjs: the recording service attaches
+  // an egress to the room on its SFU, and that room only exists once someone has published. No
+  // participant publishes here, so a start can never get past the attach in this suite.
+  it("refuses recording to a participant without ending their call", CASE_TIMEOUT, async () => {
+    const room = await createRoom("e2e-rec-owner");
+    const joinRes = await post("/api/join-room", {
+      roomInstanceId: room.roomInstanceId,
+      displayName: "e2e-rec-plain",
+    });
+    const guest = await joinRes.json();
+    const other = await attach(guest.token, room.roomInstanceId, guest.roomId);
+    await waitForCondition(
+      () => other.conference.state,
+      (state) => state === "admitted",
+      20_000,
+      "guest never reached admitted",
+    );
+
+    await assert.rejects(
+      () => other.conference.startRecording(),
+      (error) => error.code === "authorization_denied",
+      "a plain participant must not be able to record the room",
+    );
+    // The refusal is per-command: answering it fatally would drop a participant from the
+    // call for pressing a button they were shown.
+    assert.equal(other.conference.state, "admitted");
+  });
+
   it("has the media prerequisites reachable, and the SFU control API closed", CASE_TIMEOUT, async () => {
     const host = new URL(BASE_URL).hostname;
     const mediaHost = process.env["E2E_MEDIA_HOST"] ?? "51.21.252.37";
