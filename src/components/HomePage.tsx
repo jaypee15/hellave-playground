@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 
 interface Props {
-  onCreated: (displayName: string) => Promise<void>;
+  onCreated: (displayName: string, lobbyEnabled: boolean) => Promise<void>;
   onJoined: (roomInstanceId: string, displayName: string) => Promise<void>;
 }
 
@@ -11,13 +11,14 @@ export default function HomePage({ onCreated, onJoined }: Props) {
   const [roomInstanceId, setRoomInstanceId] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [lobbyEnabled, setLobbyEnabled] = useState(false);
 
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
     setError("");
     setLoading(true);
     try {
-      await onCreated(displayName);
+      await onCreated(displayName, lobbyEnabled);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Unknown error");
       setLoading(false);
@@ -64,6 +65,15 @@ export default function HomePage({ onCreated, onJoined }: Props) {
         required
         style={inputStyle}
       />
+      <label style={{ display: "block", margin: "8px 0" }}>
+        <input
+          type="checkbox"
+          checked={lobbyEnabled}
+          onChange={(e) => setLobbyEnabled(e.target.checked)}
+          data-testid="lobby-toggle"
+        />{" "}
+        Require admission (lobby)
+      </label>
       <button type="submit" disabled={loading} style={btnStyle}>
         {loading ? "Creating..." : "Create & Join"}
       </button>

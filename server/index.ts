@@ -26,12 +26,16 @@ app.post("/api/create-room", async (req, res) => {
       return;
     }
     const peerId = slugify(displayName);
+    // A room with the lobby on makes joiners wait for admission, which is what exercises
+    // the backend's lobby_admission capability. The creator is a host so they can admit.
+    const lobbyEnabled = req.body["lobbyEnabled"] === true;
     const result = await api.createMeeting({
       peerId,
       displayName,
-      role: req.body["role"] ?? "participant",
+      role: req.body["role"] ?? (lobbyEnabled ? "host" : "participant"),
+      policy: { lobbyEnabled },
     });
-    res.json({ ...result, peerId });
+    res.json({ ...result, peerId, lobbyEnabled });
   } catch (err: unknown) {
     const status = err instanceof Error && "status" in err
       ? (err as { status: number }).status
@@ -64,7 +68,9 @@ app.post("/api/join-room", async (req, res) => {
         controlRecording: false,
         updateProfile: true,
       },
-      lobby: false,
+      // Placed in the lobby when the caller says the room requires admission; the host then
+      // admits or denies. Rooms created without a lobby ignore this.
+      lobby: req.body["lobby"] === true,
     });
     // The browser needs the application roomId for attach(): it is validated against
     // room_id in the authoritative snapshot. A joiner only supplies the room *instance*

@@ -16,11 +16,11 @@ type Screen =
 export default function App() {
   const [screen, setScreen] = useState<Screen>({ name: "home" });
 
-  const handleCreated = useCallback(async (displayName: string) => {
+  const handleCreated = useCallback(async (displayName: string, lobbyEnabled = false) => {
     const res = await fetch("/api/create-room", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ displayName }),
+      body: JSON.stringify({ displayName, lobbyEnabled }),
     });
     if (!res.ok) {
       const err = await res.json();
@@ -39,7 +39,7 @@ export default function App() {
     const res = await fetch("/api/join-room", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ roomInstanceId, displayName }),
+      body: JSON.stringify({ roomInstanceId, displayName, lobby: true }),
     });
     if (!res.ok) {
       const err = await res.json();

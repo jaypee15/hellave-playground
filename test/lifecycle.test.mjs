@@ -66,8 +66,8 @@ async function waitForServer(timeoutMs = 30_000) {
   throw new Error(`playground server did not listen on ${ORIGIN} within ${timeoutMs}ms`);
 }
 
-async function createRoom(displayName) {
-  const res = await post("/api/create-room", { displayName });
+async function createRoom(displayName, lobbyEnabled = false) {
+  const res = await post("/api/create-room", { displayName, lobbyEnabled });
   const body = await res.json();
   assert.equal(res.status, 200, `create-room failed: ${JSON.stringify(body)}`);
   if (body.roomInstanceId) createdRoomInstances.push(body.roomInstanceId);
@@ -84,6 +84,18 @@ async function attach(token, roomInstanceId, roomId = roomInstanceId) {
   attachedClients.push(client);
   const conference = await client.attach({ roomId, roomInstanceId });
   return { client, conference };
+}
+
+/** Poll a getter until it satisfies the predicate, so control-plane propagation is allowed for. */
+async function waitForCondition(get, predicate, timeoutMs, label) {
+  const deadline = Date.now() + timeoutMs;
+  let last;
+  while (Date.now() < deadline) {
+    last = get();
+    if (predicate(last)) return last;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`${label} — last observed: ${JSON.stringify(last)}`);
 }
 
 function tcpProbe(host, port, timeoutMs = 6000) {
@@ -233,6 +245,47 @@ describe("playground lifecycle", () => {
     assert.equal(host.conference.terminalError, null, "host attach left a terminal error");
     assert.equal(second.conference.terminalError, null, "guest attach left a terminal error");
     assert.equal(second.conference.roomInstanceId, room.roomInstanceId);
+  });
+
+  it("holds a joiner in the lobby until the host admits them", CASE_TIMEOUT, async () => {
+    // lobby_admission is one of only four capabilities the contract declares, yet
+    // createMeeting used to hardcode lobbyEnabled: false, so this path had never run.
+    const room = await createRoom("e2e-lobby-host", true);
+    assert.equal(room.lobbyEnabled, true, "the room should require admission");
+
+    const joinRes = await post("/api/join-room", {
+      roomInstanceId: room.roomInstanceId,
+      displayName: "e2e-lobby-guest",
+      lobby: true,
+    });
+    const guest = await joinRes.json();
+    assert.equal(joinRes.status, 200, `join-room failed: ${JSON.stringify(guest)}`);
+
+    const host = await attach(room.token, room.roomInstanceId, room.roomId);
+    const waiting = await attach(guest.token, room.roomInstanceId, guest.roomId);
+
+    // The guest attaches but is not admitted.
+    assert.equal(waiting.conference.state, "waiting", "guest should be waiting for admission");
+
+    // The host sees them in the lobby and can admit.
+    const seen = await waitForCondition(
+      () => host.conference.snapshot.lobby.length,
+      (n) => n > 0,
+      20_000,
+      "host never saw the guest in the lobby",
+    );
+    assert.ok(seen > 0);
+
+    const guestId = host.conference.snapshot.lobby[0].id;
+    await host.conference.admit(guestId);
+
+    const admitted = await waitForCondition(
+      () => waiting.conference.state,
+      (state) => state === "admitted",
+      20_000,
+      "guest was never admitted",
+    );
+    assert.equal(admitted, "admitted");
   });
 
   it("has the media prerequisites reachable, and the SFU control API closed", CASE_TIMEOUT, async () => {
