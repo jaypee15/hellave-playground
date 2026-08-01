@@ -288,6 +288,63 @@ describe("playground lifecycle", () => {
     assert.equal(admitted, "admitted");
   });
 
+  it("delivers chat and raised hands between two participants", CASE_TIMEOUT, async () => {
+    const room = await createRoom("e2e-chat-host");
+    const joinRes = await post("/api/join-room", {
+      roomInstanceId: room.roomInstanceId,
+      displayName: "e2e-chat-guest",
+    });
+    const guest = await joinRes.json();
+    assert.equal(joinRes.status, 200, `join-room failed: ${JSON.stringify(guest)}`);
+
+    const host = await attach(room.token, room.roomInstanceId, room.roomId);
+    const other = await attach(guest.token, room.roomInstanceId, guest.roomId);
+
+    const received = [];
+    other.conference.on("roomMessage", (message) => received.push(message));
+    const hands = [];
+    other.conference.on("handRaisedChanged", (participantId, raised) =>
+      hands.push({ participantId, raised }));
+
+    // Both participants must be admitted before an ephemeral broadcast reaches anyone.
+    await waitForCondition(
+      () => other.conference.state,
+      (state) => state === "admitted",
+      20_000,
+      "guest never reached admitted",
+    );
+
+    host.conference.sendMessage("hello from the host");
+    const message = await waitForCondition(
+      () => received[0],
+      (value) => value !== undefined,
+      20_000,
+      "the guest never received the chat message",
+    );
+    assert.equal(message.body, "hello from the host");
+    assert.ok(message.fromParticipantId, "expected a sender id");
+    assert.equal(typeof message.sentAt, "number", "expected a server timestamp");
+
+    host.conference.setHandRaised(true);
+    const raised = await waitForCondition(
+      () => hands[0],
+      (value) => value !== undefined,
+      20_000,
+      "the guest never saw the hand raise",
+    );
+    assert.equal(raised.raised, true);
+    // Tracked client-side, since raised hands are not snapshot state.
+    assert.ok(other.conference.raisedHands.has(raised.participantId));
+
+    host.conference.setHandRaised(false);
+    await waitForCondition(
+      () => other.conference.raisedHands.has(raised.participantId),
+      (stillRaised) => stillRaised === false,
+      20_000,
+      "the hand was never lowered",
+    );
+  });
+
   it("has the media prerequisites reachable, and the SFU control API closed", CASE_TIMEOUT, async () => {
     const host = new URL(BASE_URL).hostname;
     const mediaHost = process.env["E2E_MEDIA_HOST"] ?? "51.21.252.37";

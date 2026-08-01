@@ -37,6 +37,11 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
   const [canModerateLobby, setCanModerateLobby] = useState(false);
   const [canSetSpotlight, setCanSetSpotlight] = useState(false);
   const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([]);
+  const [chat, setChat] = useState<Array<{ from: string; body: string; at: number }>>([]);
+  const [draft, setDraft] = useState("");
+  const [raisedHands, setRaisedHands] = useState<ReadonlySet<string>>(new Set());
+  const [handRaised, setHandRaised] = useState(false);
+  const [reactions, setReactions] = useState<Array<{ from: string; reaction: string }>>([]);
   const eventsRef = useRef<LogEvent[]>([]);
   const [, forceUpdate] = useState(0);
 
@@ -86,6 +91,26 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
           const stream = new MediaStream([remote.mediaStreamTrack]);
           setRemoteTracks((prev) => [...prev, { participantId: remote.ownerParticipantId, stream }]);
           addEvent(`Remote mic track from ${remote.ownerParticipantId}`);
+        });
+
+        conf.on("roomMessage", (message) => {
+          setChat((prev) => [
+            ...prev,
+            { from: message.fromParticipantId, body: message.body, at: message.sentAt },
+          ]);
+        });
+
+        conf.on("handRaisedChanged", (participantId, raised) => {
+          setRaisedHands(new Set(conf.raisedHands));
+          addEvent(`${participantId} ${raised ? "raised" : "lowered"} their hand`);
+        });
+
+        conf.on("reactionReceived", (reaction) => {
+          setReactions((prev) => [
+            ...prev.slice(-4),
+            { from: reaction.fromParticipantId, reaction: reaction.reaction },
+          ]);
+          addEvent(`${reaction.fromParticipantId} reacted: ${reaction.reaction}`);
         });
 
         conf.on("error", (err) => {
@@ -206,6 +231,42 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
     }
   };
 
+  const handleSendChat = (e: React.FormEvent) => {
+    e.preventDefault();
+    const body = draft.trim();
+    if (!conference || !body) return;
+    try {
+      conference.sendMessage(body);
+      // The server broadcasts to everyone except the sender, so echo locally.
+      setChat((prev) => [...prev, { from: `${peerId} (you)`, body, at: Date.now() / 1000 }]);
+      setDraft("");
+    } catch (err: unknown) {
+      addEvent(`Chat failed: ${err instanceof Error ? err.message : "Unknown"}`);
+    }
+  };
+
+  const handleToggleHand = () => {
+    if (!conference) return;
+    const next = !handRaised;
+    try {
+      conference.setHandRaised(next);
+      setHandRaised(next);
+      addEvent(next ? "Hand raised" : "Hand lowered");
+    } catch (err: unknown) {
+      addEvent(`Hand raise failed: ${err instanceof Error ? err.message : "Unknown"}`);
+    }
+  };
+
+  const handleReaction = (reaction: string) => {
+    if (!conference) return;
+    try {
+      conference.sendReaction(reaction);
+      setReactions((prev) => [...prev.slice(-4), { from: `${peerId} (you)`, reaction }]);
+    } catch (err: unknown) {
+      addEvent(`Reaction failed: ${err instanceof Error ? err.message : "Unknown"}`);
+    }
+  };
+
   const handleLeave = () => {
     client.leave();
     onLeave();
@@ -251,6 +312,13 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
               Stop Publishing
             </button>
           )}
+          <button
+            onClick={handleToggleHand}
+            style={{ ...btnStyle, background: handRaised ? "#ca8a04" : "#4f46e5" }}
+            data-testid="hand-toggle"
+          >
+            {handRaised ? "Lower Hand" : "Raise Hand"}
+          </button>
           <button onClick={handleLeave} style={{ ...btnStyle, background: "#6b7280" }}>Leave</button>
         </div>
       </div>
@@ -333,6 +401,54 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
             Waiting for participants...
           </div>
         )}
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
+        <strong>React:</strong>
+        {["thumbs_up", "clap", "heart", "laugh", "surprised", "party"].map((reaction) => (
+          <button
+            key={reaction}
+            onClick={() => handleReaction(reaction)}
+            style={{ ...btnStyle, padding: "4px 10px", background: "#374151" }}
+          >
+            {reaction}
+          </button>
+        ))}
+        {reactions.length > 0 && (
+          <span data-testid="reactions" style={{ marginLeft: 8, color: "#6b7280" }}>
+            {reactions.map((r) => `${r.reaction} (${r.from})`).join(" · ")}
+          </span>
+        )}
+      </div>
+
+      {raisedHands.size > 0 && (
+        <p data-testid="raised-hands" style={{ marginBottom: 12 }}>
+          <strong>Hands up:</strong> {[...raisedHands].join(", ")}
+        </p>
+      )}
+
+      <div style={{ border: "1px solid #e5e7eb", borderRadius: 6, padding: 12, marginBottom: 16 }}>
+        <strong>Chat</strong>
+        <div
+          data-testid="chat-log"
+          style={{ maxHeight: 160, overflowY: "auto", margin: "8px 0", fontSize: 14 }}
+        >
+          {chat.length === 0 && <span style={{ color: "#9ca3af" }}>No messages yet</span>}
+          {chat.map((message, index) => (
+            <div key={`${message.at}-${index}`}>
+              <strong>{message.from}:</strong> {message.body}
+            </div>
+          ))}
+        </div>
+        <form onSubmit={handleSendChat} style={{ display: "flex", gap: 8 }}>
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="Message the room"
+            style={{ flex: 1 }}
+          />
+          <button type="submit" style={btnStyle}>Send</button>
+        </form>
       </div>
 
       <EventsPanel events={eventsRef.current} />
