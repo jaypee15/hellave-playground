@@ -206,6 +206,49 @@ describe("audio through the SFU", () => {
     }
   });
 
+  // KNOWN FAILING. A media session is still created only by publishing, so a listener never
+  // gets an SFU transport: the SFU logs peers_in_room=1 for a room with two participants.
+  // Left in place because it encodes the behaviour we want and is the regression test for it.
+  it("carries audio to a listener that publishes nothing", CASE_TIMEOUT, async () => {
+    // A participant who joins only to listen must hear the room.
+    const host = await newPage("listen-host");
+    const listener = await newPage("listener");
+
+    await host.goto(ORIGIN);
+    await host.getByRole("button", { name: "Create a Room" }).click();
+    await host.getByPlaceholder("Your name").fill("listen-host");
+    await host.getByRole("button", { name: /Create & Join|Creating/ }).click();
+    const roomInstanceId = await host
+      .getByTestId("room-instance-id")
+      .innerText({ timeout: 60_000 });
+
+    await listener.goto(ORIGIN);
+    await listener.getByRole("button", { name: "Join a Room" }).click();
+    await listener.getByPlaceholder("Room Instance ID").fill(roomInstanceId);
+    await listener.getByPlaceholder("Your name").fill("listener");
+    await listener.getByRole("button", { name: /^Join$|Joining/ }).click();
+    await listener.getByTestId("room-instance-id").waitFor({ timeout: 60_000 });
+
+    // Only the host publishes. The listener never touches a capture control.
+    const publish = host.getByRole("button", { name: "Publish Mic" });
+    await publish.waitFor({ timeout: 60_000 });
+    await publish.click();
+    await waitFor(
+      () => outboundAudio(host),
+      (t) => t.packetsSent > 0,
+      MEDIA_WAIT_MS,
+      "host never sent audio RTP",
+    );
+
+    const received = await waitFor(
+      () => inboundAudio(listener),
+      (t) => t.packetsReceived > 0,
+      MEDIA_WAIT_MS,
+      "a listener that publishes nothing received no audio",
+    );
+    assert.ok(received.bytesReceived > 0, `listener heard nothing: ${JSON.stringify(received)}`);
+  });
+
   it("carries a published microphone from one browser to another", CASE_TIMEOUT, async () => {
     const host = await newPage("host");
     const guest = await newPage("guest");
