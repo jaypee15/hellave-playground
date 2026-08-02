@@ -3,3 +3,6 @@ dist/
 .env
 .env.local
 .env.*.local
+
+# Local stack configuration (see Hellave/scripts/local-stack.sh).
+.env.local

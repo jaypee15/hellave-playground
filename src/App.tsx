@@ -26,9 +26,12 @@ export default function App() {
       const err = await res.json();
       throw new Error(err.error ?? "Failed to create room");
     }
-    const { token, roomInstanceId, roomId, peerId } = await res.json();
+    const { token, roomInstanceId, roomId, peerId, controlUrl } = await res.json();
+    // Told by the server rather than hardcoded, so the browser always attaches to the same
+    // stack that minted the token. Pointing them at different deployments produces an
+    // authentication failure that looks nothing like a configuration mistake.
     const config: HellaveConfig = {
-      controlUrl: "https://hellave-api.maiaddy.com",
+      controlUrl,
       tokenProvider: async () => ({ token }),
     };
     const client = new HellaveClient(config);
@@ -45,9 +48,9 @@ export default function App() {
       const err = await res.json();
       throw new Error(err.error ?? "Failed to join room");
     }
-    const { token, roomId, peerId } = await res.json();
+    const { token, roomId, peerId, controlUrl } = await res.json();
     const config: HellaveConfig = {
-      controlUrl: "https://hellave-api.maiaddy.com",
+      controlUrl,
       tokenProvider: async () => ({ token }),
     };
     const client = new HellaveClient(config);

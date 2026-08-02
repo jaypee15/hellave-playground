@@ -38,7 +38,7 @@ app.post("/api/create-room", async (req, res) => {
       role: req.body["role"] ?? "host",
       policy: { lobbyEnabled },
     });
-    res.json({ ...result, peerId, lobbyEnabled });
+    res.json({ ...result, peerId, lobbyEnabled, controlUrl: baseUrl });
   } catch (err: unknown) {
     const status = err instanceof Error && "status" in err
       ? (err as { status: number }).status
@@ -102,6 +102,7 @@ app.post("/api/join-room", async (req, res) => {
       expiresAt: token.expiresAt,
       peerId,
       roomId: roomIdFromToken(token.token),
+      controlUrl: baseUrl,
     });
   } catch (err: unknown) {
     const status = err instanceof Error && "status" in err
