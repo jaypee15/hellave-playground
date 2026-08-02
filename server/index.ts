@@ -57,7 +57,7 @@ app.post("/api/join-room", async (req, res) => {
     const peerId = slugify(displayName);
     const role = req.body["role"] ?? "participant";
     const isHost = role === "host";
-    const token = await api.issueMeetingToken(roomInstanceId, {
+    const mintToken = (lobby: boolean) => api.issueMeetingToken(roomInstanceId, {
       peerId,
       sessionId: crypto.randomUUID(),
       profile: { displayName, avatarUrl: null },
@@ -75,10 +75,25 @@ app.post("/api/join-room", async (req, res) => {
         controlRecording: isHost,
         updateProfile: true,
       },
-      // Placed in the lobby when the caller says the room requires admission; the host then
-      // admits or denies. Rooms created without a lobby ignore this.
-      lobby: req.body["lobby"] === true,
+      lobby,
     });
+
+    // A joiner knows only the room instance id, and Hellave exposes no way to read a room's
+    // policy, so it cannot tell whether admission is required. Asking for lobby placement in
+    // a room that has none is refused outright with "the room policy does not allow lobby
+    // attachment", which used to make every join of an ordinary room fail. Ask, then fall
+    // back on exactly that refusal.
+    const wantsLobby = req.body["lobby"] === true;
+    let token;
+    try {
+      token = await mintToken(wantsLobby);
+    } catch (err: unknown) {
+      const refusedLobby = wantsLobby
+        && err instanceof Error
+        && /does not allow lobby/i.test(err.message);
+      if (!refusedLobby) throw err;
+      token = await mintToken(false);
+    }
     // The browser needs the application roomId for attach(): it is validated against
     // room_id in the authoritative snapshot. A joiner only supplies the room *instance*
     // id, so read the roomId out of the token we just minted.

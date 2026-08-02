@@ -114,18 +114,30 @@ async function iceDiagnostics(page) {
         local: [],
         remote: [],
       };
-      (await pc.getStats()).forEach((r) => {
+      // Candidates are indexed first so each pair can name the two endpoints it joins.
+      // Without that, "two pairs got no response" cannot distinguish a blocked public port
+      // from a relay path that was never attempted.
+      const stats = await pc.getStats();
+      const candidates = new Map();
+      stats.forEach((r) => {
+        if (r.type === "local-candidate" || r.type === "remote-candidate") {
+          candidates.set(r.id, `${r.candidateType}/${r.protocol}:${r.address}:${r.port}`);
+        }
+      });
+      stats.forEach((r) => {
         if (r.type === "candidate-pair") {
           info.pairs.push({
             state: r.state,
             nominated: r.nominated,
             requestsSent: r.requestsSent,
             responsesReceived: r.responsesReceived,
+            from: candidates.get(r.localCandidateId) ?? r.localCandidateId,
+            to: candidates.get(r.remoteCandidateId) ?? r.remoteCandidateId,
           });
         }
         if (r.type === "local-candidate") info.local.push(`${r.candidateType}/${r.protocol}`);
         if (r.type === "remote-candidate") {
-          info.remote.push(`${r.candidateType}/${r.protocol}:${r.port}`);
+          info.remote.push(`${r.candidateType}/${r.protocol}:${r.address}:${r.port}`);
         }
       });
       out.push(info);
