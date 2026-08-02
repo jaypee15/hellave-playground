@@ -296,12 +296,8 @@ describe("audio through the SFU", () => {
     }
   });
 
-  // KNOWN FAILING, for two real defects rather than a test problem:
-  //  1. publishing a second source (camera after microphone) makes the SFU answer the
-  //     renegotiation-offer poll with 500 "room was not found";
-  //  2. finalization rejects an audio-only capture with "recording contained no
-  //     keyframe-safe media", so the camera in (1) is required to close a recording at all.
-  // Left in place because it encodes the behaviour we want and will pass once those are fixed.
+  // Microphone only, deliberately: an audio-only capture is the case that used to be
+  // rejected at stop with "recording contained no keyframe-safe media".
   it("records a room once media is flowing", CASE_TIMEOUT, async () => {
     // Lives here rather than in the lifecycle suite because the recording service attaches an
     // egress to the room on its SFU, and that room only exists once someone has published.
@@ -323,11 +319,6 @@ describe("audio through the SFU", () => {
     );
 
     // Only a host is offered this, so its presence also confirms the token's capability.
-    // Also publish the camera: finalization refuses a recording with no keyframe-safe
-    // media, and keyframes only exist in video, so an audio-only capture cannot be closed.
-    await host.getByRole("button", { name: "Start camera" }).click();
-    await host.getByRole("button", { name: "Stop camera" }).waitFor({ timeout: 60_000 });
-
     const record = host.getByTestId("recording-toggle");
     await record.waitFor({ timeout: 30_000 });
     await record.click();
