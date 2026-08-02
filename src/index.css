@@ -1,0 +1,82 @@
+@import "tailwindcss";
+
+/*
+ * Meeting-room palette. Kept as theme tokens rather than literal colours in JSX so the whole
+ * surface can be retuned in one place, and so tiles, panels and the control bar cannot drift
+ * apart from each other.
+ */
+@theme {
+  --color-room-950: #0f1012;
+  --color-room-900: #17181b;
+  --color-room-850: #1e1f23;
+  --color-room-800: #26272c;
+  --color-room-700: #34363c;
+  --color-room-600: #4a4d55;
+  --color-room-400: #9aa0aa;
+  --color-room-200: #d9dce1;
+  --color-accent: #6366f1;
+  --color-accent-strong: #4f46e5;
+  --color-danger: #dc2626;
+  --color-live: #10b981;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-room-950);
+  color: var(--color-room-200);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Reactions drift up over the grid and fade, so they read as transient rather than as state. */
+@keyframes float-up {
+  0% {
+    opacity: 0;
+    transform: translateY(0) scale(0.7);
+  }
+  15% {
+    opacity: 1;
+    transform: translateY(-10px) scale(1.1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-160px) scale(1);
+  }
+}
+
+.animate-float-up {
+  animation: float-up 2.8s ease-out forwards;
+}
+
+/* The recording dot pulses: a static red dot reads as decoration, a pulsing one reads as live. */
+@keyframes recording-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.animate-recording-pulse {
+  animation: recording-pulse 1.6s ease-in-out infinite;
+}
+
+/* Speaking ring. Applied on the tile so it frames the video rather than shifting layout. */
+.ring-speaking {
+  box-shadow: 0 0 0 3px var(--color-live);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-float-up,
+  .animate-recording-pulse {
+    animation: none;
+  }
+}

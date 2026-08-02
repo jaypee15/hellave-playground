@@ -1,13 +1,19 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import {
   HellaveClient,
   type Conference,
   type ConferenceState,
   type LobbyParticipant,
   type MediaPublication,
+  type RoomSnapshot,
 } from "@hellave/js-sdk";
-import ParticipantTile from "./ParticipantTile.js";
-import EventsPanel from "./EventsPanel.js";
+import VideoGrid from "./VideoGrid.js";
+import type { TileParticipant } from "./VideoTile.js";
+import ControlBar from "./ControlBar.js";
+import SidePanel, { type ChatMessage } from "./SidePanel.js";
+import LobbyRequests from "./LobbyRequests.js";
+import ReactionOverlay, { type FloatingReaction } from "./ReactionOverlay.js";
+import DebugDrawer from "./DebugDrawer.js";
 
 interface Props {
   client: HellaveClient;
@@ -22,39 +28,96 @@ interface LogEvent {
   msg: string;
 }
 
+/** How long a floating reaction stays on screen; matches the float-up animation. */
+const REACTION_TTL_MS = 2_800;
+
 export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId, onLeave }: Props) {
   const [conference, setConference] = useState<Conference | null>(null);
   const [state, setState] = useState<ConferenceState>("waiting");
-  const [participants, setParticipants] = useState<Array<{ id: string; displayName: string; role: string }>>([]);
+  const [participants, setParticipants] = useState<
+    Array<{ id: string; displayName: string; role: string; mutedAudio: boolean }>
+  >([]);
   const [publishing, setPublishing] = useState(false);
   const [muted, setMuted] = useState(false);
-  const [remoteTracks, setRemoteTracks] = useState<Array<{ participantId: string; stream: MediaStream }>>([]);
+  const [remoteAudio, setRemoteAudio] = useState<Array<{ participantId: string; stream: MediaStream }>>([]);
+  const [remoteVideo, setRemoteVideo] = useState<Array<{ participantId: string; stream: MediaStream }>>([]);
+  const [localVideo, setLocalVideo] = useState<MediaStream | null>(null);
   const [error, setError] = useState("");
   const [mediaPath, setMediaPath] = useState("");
   const [publication, setPublication] = useState<MediaPublication | null>(null);
+  const [cameraPublication, setCameraPublication] = useState<MediaPublication | null>(null);
+  const [screenPublication, setScreenPublication] = useState<MediaPublication | null>(null);
   const [lobby, setLobby] = useState<readonly LobbyParticipant[]>([]);
   const [spotlight, setSpotlight] = useState<string | null>(null);
+  const [spotlightOwner, setSpotlightOwner] = useState<string | null>(null);
   const [canModerateLobby, setCanModerateLobby] = useState(false);
-  const [canSetSpotlight, setCanSetSpotlight] = useState(false);
   const [canControlRecording, setCanControlRecording] = useState(false);
   const [recording, setRecording] = useState<{ active: boolean; recordingId: string | null }>({
     active: false,
     recordingId: null,
   });
   const [recordingBusy, setRecordingBusy] = useState(false);
-  const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([]);
-  const [chat, setChat] = useState<Array<{ from: string; body: string; at: number }>>([]);
+  const [chat, setChat] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
+  const [chatOpen, setChatOpen] = useState(false);
+  const [unread, setUnread] = useState(0);
   const [raisedHands, setRaisedHands] = useState<ReadonlySet<string>>(new Set());
   const [handRaised, setHandRaised] = useState(false);
-  const [reactions, setReactions] = useState<Array<{ from: string; reaction: string }>>([]);
+  const [floating, setFloating] = useState<FloatingReaction[]>([]);
+  const [view, setView] = useState<"grid" | "speaker">("grid");
   const eventsRef = useRef<LogEvent[]>([]);
   const [, forceUpdate] = useState(0);
+  const reactionKey = useRef(0);
+  // Read inside the reaction handler, which is registered once; a state value would be
+  // captured at registration and always read as closed.
+  const chatOpenRef = useRef(chatOpen);
+  chatOpenRef.current = chatOpen;
 
   const addEvent = useCallback((msg: string) => {
     eventsRef.current = [...eventsRef.current, { time: new Date().toLocaleTimeString(), msg }];
     forceUpdate((n) => n + 1);
   }, []);
+
+  const pushReaction = useCallback((from: string, reaction: string) => {
+    reactionKey.current += 1;
+    const key = reactionKey.current;
+    setFloating((previous) => [
+      ...previous,
+      { key, from, reaction, offset: 15 + Math.random() * 70 },
+    ]);
+    setTimeout(() => {
+      setFloating((previous) => previous.filter((item) => item.key !== key));
+    }, REACTION_TTL_MS);
+  }, []);
+
+  /**
+   * Project an authoritative snapshot onto local state.
+   *
+   * Applied to conference.snapshot at attach as well as to every later change: attaching does
+   * not raise snapshotChanged, so reading the roster only from the event left a participant
+   * who was alone in the room seeing an empty grid and none of their own capabilities.
+   */
+  const applySnapshot = useCallback((snap: RoomSnapshot) => {
+    setParticipants(snap.participants.map((p) => ({
+      id: p.id,
+      displayName: p.profile.displayName,
+      role: p.role,
+      mutedAudio: p.muted.audio,
+    })));
+    setLobby(snap.lobby);
+    setSpotlight(snap.spotlightPublicationId);
+    // The snapshot spotlights a publication, but the grid features a participant.
+    setSpotlightOwner(
+      snap.publications.find((pub) => pub.id === snap.spotlightPublicationId)
+        ?.ownerParticipantId ?? null,
+    );
+    // Only offer moderation the token actually grants.
+    const me = snap.participants.find((p) => p.id === peerId);
+    if (me) {
+      setCanModerateLobby(me.capabilities.moderateLobby);
+      setCanControlRecording(me.capabilities.controlRecording);
+    }
+  }, [peerId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -65,46 +128,47 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
         if (cancelled) return;
         setConference(conf);
         setState(conf.state);
+        applySnapshot(conf.snapshot);
         addEvent(`Connected. State: ${conf.state}`);
 
         conf.on("stateChanged", (s) => {
           setState(s);
+          applySnapshot(conf.snapshot);
           addEvent(`State changed: ${s}`);
         });
 
         conf.on("snapshotChanged", (snap) => {
-          const list = snap.participants.map((p) => ({
-            id: p.id,
-            displayName: p.profile.displayName,
-            role: p.role,
-          }));
-          setParticipants(list);
-          setLobby(snap.lobby);
-          setSpotlight(snap.spotlightPublicationId);
-          // Only offer moderation the token actually grants.
-          const me = snap.participants.find((p) => p.id === peerId);
-          if (me) {
-            setCanModerateLobby(me.capabilities.moderateLobby);
-            setCanSetSpotlight(me.capabilities.setSpotlight);
-            setCanControlRecording(me.capabilities.controlRecording);
-          }
+          applySnapshot(snap);
           addEvent(
-            `Snapshot updated: ${list.length} participants` +
+            `Snapshot updated: ${snap.participants.length} participants` +
               (snap.lobby.length > 0 ? `, ${snap.lobby.length} waiting` : ""),
           );
         });
 
         conf.on("remoteMicrophoneTrack", (remote) => {
           const stream = new MediaStream([remote.mediaStreamTrack]);
-          setRemoteTracks((prev) => [...prev, { participantId: remote.ownerParticipantId, stream }]);
+          setRemoteAudio((prev) => [
+            ...prev.filter((t) => t.participantId !== remote.ownerParticipantId),
+            { participantId: remote.ownerParticipantId, stream },
+          ]);
           addEvent(`Remote mic track from ${remote.ownerParticipantId}`);
+        });
+
+        conf.on("remoteVideoTrack", (remote) => {
+          const stream = new MediaStream([remote.mediaStreamTrack]);
+          setRemoteVideo((prev) => [
+            ...prev.filter((t) => t.participantId !== remote.ownerParticipantId),
+            { participantId: remote.ownerParticipantId, stream },
+          ]);
+          addEvent(`Remote video track from ${remote.ownerParticipantId}`);
         });
 
         conf.on("roomMessage", (message) => {
           setChat((prev) => [
             ...prev,
-            { from: message.fromParticipantId, body: message.body, at: message.sentAt },
+            { from: message.fromParticipantId, body: message.body, at: message.sentAt, mine: false },
           ]);
+          if (!chatOpenRef.current) setUnread((count) => count + 1);
         });
 
         conf.on("handRaisedChanged", (participantId, raised) => {
@@ -118,10 +182,7 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
         });
 
         conf.on("reactionReceived", (reaction) => {
-          setReactions((prev) => [
-            ...prev.slice(-4),
-            { from: reaction.fromParticipantId, reaction: reaction.reaction },
-          ]);
+          pushReaction(reaction.fromParticipantId, reaction.reaction);
           addEvent(`${reaction.fromParticipantId} reacted: ${reaction.reaction}`);
         });
 
@@ -137,7 +198,7 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
       }
     })();
     return () => { cancelled = true; };
-  }, [client, roomId, roomInstanceId, peerId, addEvent]);
+  }, [client, roomId, roomInstanceId, peerId, addEvent, pushReaction, applySnapshot]);
 
   // Poll the transport so the actual ICE path is visible: "relay/tcp" means media is going
   // through TURN, which is the fallback for networks that block UDP.
@@ -170,10 +231,9 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
       addEvent("Publishing microphone...");
       const pub = await conference.publishMicrophone();
       setPublication(pub);
-      const devices = await conference.mediaDeviceController.enumerateAudioInputs();
-      setAudioInputs(devices);
       addEvent(`Microphone published (${pub.id})`);
     } catch (err: unknown) {
+      setPublishing(false);
       addEvent(`Publish failed: ${err instanceof Error ? err.message : "Unknown"}`);
     }
   };
@@ -187,16 +247,46 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
     addEvent(next ? "Local mute on" : "Local mute off");
   };
 
-  const handleStopPublishing = async () => {
-    if (!publication) return;
+  const handleToggleCamera = async () => {
+    if (!conference) return;
     try {
-      await publication.stop();
-      setPublication(null);
-      setPublishing(false);
-      setMuted(false);
-      addEvent("Publication stopped");
+      if (cameraPublication) {
+        await cameraPublication.stop();
+        setCameraPublication(null);
+        setLocalVideo(null);
+        addEvent("Camera stopped");
+        return;
+      }
+      // Captured here rather than through conference.publishCamera() because a
+      // MediaPublication exposes no track, and the self-view needs one to render.
+      const [capture] = await conference.mediaDeviceController.capturePreview({
+        audio: false,
+        video: true,
+      });
+      if (!capture) throw new Error("camera produced no track");
+      const pub = await conference.mediaDeviceController.publishCapture(capture);
+      setCameraPublication(pub);
+      setLocalVideo(new MediaStream([capture.mediaStreamTrack]));
+      addEvent(`Camera published (${pub.id})`);
     } catch (err: unknown) {
-      addEvent(`Stop failed: ${err instanceof Error ? err.message : "Unknown"}`);
+      addEvent(`Camera failed: ${err instanceof Error ? err.message : "Unknown"}`);
+    }
+  };
+
+  const handleToggleScreen = async () => {
+    if (!conference) return;
+    try {
+      if (screenPublication) {
+        await screenPublication.stop();
+        setScreenPublication(null);
+        addEvent("Screen share stopped");
+        return;
+      }
+      const pub = await conference.publishScreen();
+      setScreenPublication(pub);
+      addEvent(`Screen shared (${pub.id})`);
+    } catch (err: unknown) {
+      addEvent(`Screen share failed: ${err instanceof Error ? err.message : "Unknown"}`);
     }
   };
 
@@ -220,29 +310,6 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
     }
   };
 
-  const handleSpotlight = async (publicationId: string | null) => {
-    if (!conference) return;
-    try {
-      await conference.setSpotlight(publicationId);
-      addEvent(publicationId ? `Spotlight set to ${publicationId}` : "Spotlight cleared");
-    } catch (err: unknown) {
-      addEvent(`Spotlight failed: ${err instanceof Error ? err.message : "Unknown"}`);
-    }
-  };
-
-  const handleDeviceChange = async (deviceId: string) => {
-    if (!conference || !publication) return;
-    try {
-      // switchDevice swaps the track on the existing publication, so the publication id and
-      // the SFU binding survive the change.
-      const next = await conference.mediaDeviceController.switchDevice(publication, { deviceId });
-      setPublication(next);
-      addEvent(`Switched microphone to ${deviceId.slice(0, 12)}...`);
-    } catch (err: unknown) {
-      addEvent(`Device switch failed: ${err instanceof Error ? err.message : "Unknown"}`);
-    }
-  };
-
   const handleSendChat = (e: React.FormEvent) => {
     e.preventDefault();
     const body = draft.trim();
@@ -250,7 +317,7 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
     try {
       conference.sendMessage(body);
       // The server broadcasts to everyone except the sender, so echo locally.
-      setChat((prev) => [...prev, { from: `${peerId} (you)`, body, at: Date.now() / 1000 }]);
+      setChat((prev) => [...prev, { from: peerId, body, at: Date.now() / 1000, mine: true }]);
       setDraft("");
     } catch (err: unknown) {
       addEvent(`Chat failed: ${err instanceof Error ? err.message : "Unknown"}`);
@@ -273,7 +340,7 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
     if (!conference) return;
     try {
       conference.sendReaction(reaction);
-      setReactions((prev) => [...prev.slice(-4), { from: `${peerId} (you)`, reaction }]);
+      pushReaction("You", reaction);
     } catch (err: unknown) {
       addEvent(`Reaction failed: ${err instanceof Error ? err.message : "Unknown"}`);
     }
@@ -302,226 +369,169 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
     onLeave();
   };
 
-  // Show the full Room Instance ID: it is what a joiner pastes into "Join a Room".
-  // roomId is the short application-level id and is not enough to join.
+  const openChat = () => {
+    setChatOpen((open) => {
+      if (!open) setUnread(0);
+      return !open;
+    });
+  };
 
-  const stateColor = state === "admitted" ? "#16a34a"
-    : state === "denied" || state === "failed" ? "#dc2626"
-    : "#ca8a04";
+  const tiles = useMemo<TileParticipant[]>(() => {
+    const known = participants.map((participant) => ({
+      id: participant.id,
+      displayName: participant.displayName,
+      role: participant.role,
+      audioStream: remoteAudio.find((t) => t.participantId === participant.id)?.stream,
+      videoStream: participant.id === peerId
+        ? localVideo ?? undefined
+        : remoteVideo.find((t) => t.participantId === participant.id)?.stream,
+      handRaised: raisedHands.has(participant.id),
+      muted: participant.id === peerId ? muted : participant.mutedAudio,
+      isLocal: participant.id === peerId,
+    }));
+    // Before the first snapshot arrives the roster is empty, but the local camera preview
+    // should still be visible rather than showing an empty room.
+    if (known.length === 0 && localVideo) {
+      return [{
+        id: peerId,
+        displayName: peerId,
+        role: "participant",
+        videoStream: localVideo,
+        handRaised: handRaised,
+        muted,
+        isLocal: true,
+      }];
+    }
+    return known;
+  }, [participants, remoteAudio, remoteVideo, localVideo, raisedHands, muted, peerId, handRaised]);
+
+  const panelParticipants = useMemo(
+    () => tiles.map((tile) => ({
+      id: tile.id,
+      displayName: tile.displayName,
+      role: tile.role,
+      handRaised: tile.handRaised,
+      isLocal: tile.isLocal,
+    })),
+    [tiles],
+  );
+
+  const stateTone = state === "admitted" ? "text-live"
+    : state === "denied" || state === "failed" ? "text-danger"
+    : "text-amber-400";
 
   return (
-    <div style={{ maxWidth: 800, margin: "20px auto", padding: "0 16px" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <div>
-          <strong>Room Instance:</strong>{" "}
-          <code data-testid="room-instance-id">{roomInstanceId}</code>
-          <span style={{ marginLeft: 16 }}><strong>Room:</strong> {roomId}</span>
-          <span style={{ marginLeft: 16 }}>
-            <strong>Status:</strong>{" "}
-            <span style={{ color: stateColor }}>{state}</span>
-          </span>
-          <span style={{ marginLeft: 16 }}><strong>You:</strong> {peerId}</span>
-          {mediaPath && (
-            <span style={{ marginLeft: 16 }}>
-              <strong>Path:</strong>{" "}
-              <code data-testid="media-path">{mediaPath}</code>
-            </span>
-          )}
-        </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          {state === "admitted" && !publishing && (
-            <button onClick={handlePublish} style={btnStyle}>Publish Mic</button>
-          )}
-          {publishing && (
-            <button onClick={handleMute} style={btnStyle} data-testid="mute">
-              {muted ? "Unmute" : "Mute"}
-            </button>
-          )}
-          {publishing && (
-            <button onClick={handleStopPublishing} style={{ ...btnStyle, background: "#b45309" }}>
-              Stop Publishing
-            </button>
-          )}
-          <button
-            onClick={handleToggleHand}
-            style={{ ...btnStyle, background: handRaised ? "#ca8a04" : "#4f46e5" }}
-            data-testid="hand-toggle"
+    <div className="flex h-full flex-col bg-room-950">
+      <header className="flex shrink-0 flex-wrap items-center gap-3 px-4 py-3">
+        <span className="text-sm font-semibold tracking-tight">Hellave</span>
+
+        <span className="hidden text-xs text-room-400 sm:inline">{roomId}</span>
+
+        {/* Read with innerText by the audio test, so it must not live inside the collapsed
+            debug drawer: hidden elements report no text. */}
+        <code
+          data-testid="room-instance-id"
+          className="max-w-[16rem] truncate rounded bg-room-850 px-2 py-1 font-mono text-[11px] text-room-400"
+        >
+          {roomInstanceId}
+        </code>
+
+        <span data-testid="conference-state" className={`text-xs font-medium ${stateTone}`}>
+          {state}
+        </span>
+
+        {mediaPath && (
+          <code
+            data-testid="media-path"
+            className="rounded bg-room-850 px-2 py-1 font-mono text-[11px] text-room-400"
           >
-            {handRaised ? "Lower Hand" : "Raise Hand"}
-          </button>
-          {canControlRecording && (
-            <button
-              onClick={() => void handleToggleRecording()}
-              disabled={recordingBusy || state !== "admitted"}
-              style={{ ...btnStyle, background: recording.active ? "#dc2626" : "#0f766e" }}
-              data-testid="recording-toggle"
-            >
-              {recordingBusy ? "Working..." : recording.active ? "Stop Recording" : "Record"}
-            </button>
-          )}
-          <button onClick={handleLeave} style={{ ...btnStyle, background: "#6b7280" }}>Leave</button>
-        </div>
-      </div>
-
-      {recording.active && (
-        <div
-          data-testid="recording-indicator"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            border: "1px solid #dc2626",
-            borderRadius: 6,
-            padding: "8px 12px",
-            marginBottom: 16,
-            color: "#dc2626",
-          }}
-        >
-          <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#dc2626" }} />
-          <strong>This room is being recorded</strong>
-          {recording.recordingId && <code>{recording.recordingId}</code>}
-        </div>
-      )}
-
-      {error && <p style={{ color: "red", marginBottom: 16 }}>{error}</p>}
-
-      {canModerateLobby && lobby.length > 0 && (
-        <div
-          data-testid="lobby-panel"
-          style={{ border: "1px solid #ca8a04", borderRadius: 6, padding: 12, marginBottom: 16 }}
-        >
-          <strong>Waiting for admission ({lobby.length})</strong>
-          {lobby.map((waiting) => (
-            <div key={waiting.id} style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
-              <span style={{ flex: 1 }}>
-                {waiting.profile.displayName} <code>{waiting.id}</code>
-              </span>
-              <button onClick={() => void handleAdmit(waiting.id)} style={btnStyle}>Admit</button>
-              <button
-                onClick={() => void handleDeny(waiting.id)}
-                style={{ ...btnStyle, background: "#dc2626" }}
-              >
-                Deny
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {publishing && audioInputs.length > 1 && (
-        <div style={{ marginBottom: 16 }}>
-          <label>
-            <strong>Microphone:</strong>{" "}
-            <select onChange={(e) => void handleDeviceChange(e.target.value)}>
-              {audioInputs.map((device) => (
-                <option key={device.deviceId} value={device.deviceId}>
-                  {device.label || device.deviceId.slice(0, 16)}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-      )}
-
-      {canSetSpotlight && publication && (
-        <div style={{ marginBottom: 16, display: "flex", alignItems: "center", gap: 8 }}>
-          <strong>Spotlight:</strong>
-          <code data-testid="spotlight">{spotlight ?? "none"}</code>
-          <button onClick={() => void handleSpotlight(publication.id)} style={btnStyle}>
-            Spotlight mine
-          </button>
-          {spotlight && (
-            <button
-              onClick={() => void handleSpotlight(null)}
-              style={{ ...btnStyle, background: "#6b7280" }}
-            >
-              Clear
-            </button>
-          )}
-        </div>
-      )}
-
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
-        gap: 12,
-        marginBottom: 24,
-      }}>
-        {participants.map((p) => (
-          <ParticipantTile
-            key={p.id}
-            id={p.id}
-            displayName={p.displayName}
-            role={p.role}
-            stream={remoteTracks.find((t) => t.participantId === p.id)?.stream}
-          />
-        ))}
-        {participants.length === 0 && (
-          <div style={{ color: "#9ca3af", gridColumn: "1 / -1", textAlign: "center", padding: 24 }}>
-            Waiting for participants...
-          </div>
+            {mediaPath}
+          </code>
         )}
-      </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
-        <strong>React:</strong>
-        {["thumbs_up", "clap", "heart", "laugh", "surprised", "party"].map((reaction) => (
-          <button
-            key={reaction}
-            onClick={() => handleReaction(reaction)}
-            style={{ ...btnStyle, padding: "4px 10px", background: "#374151" }}
+        {recording.active && (
+          <span
+            data-testid="recording-indicator"
+            className="flex items-center gap-1.5 rounded-full bg-danger/15 px-2.5 py-1 text-[11px] font-medium text-danger ring-1 ring-danger/40"
           >
-            {reaction}
-          </button>
-        ))}
-        {reactions.length > 0 && (
-          <span data-testid="reactions" style={{ marginLeft: 8, color: "#6b7280" }}>
-            {reactions.map((r) => `${r.reaction} (${r.from})`).join(" · ")}
+            <span className="animate-recording-pulse h-2 w-2 rounded-full bg-danger" />
+            Recording
           </span>
         )}
-      </div>
 
-      {raisedHands.size > 0 && (
-        <p data-testid="raised-hands" style={{ marginBottom: 12 }}>
-          <strong>Hands up:</strong> {[...raisedHands].join(", ")}
-        </p>
+        <span className="grow" />
+
+        <button
+          type="button"
+          onClick={() => setView((current) => (current === "grid" ? "speaker" : "grid"))}
+          data-testid="view-toggle"
+          className="rounded-lg bg-room-800 px-3 py-1.5 text-xs font-medium text-room-400 transition-colors hover:bg-room-700 hover:text-room-200"
+        >
+          {view === "grid" ? "Speaker view" : "Grid view"}
+        </button>
+
+        <DebugDrawer
+          events={eventsRef.current}
+          roomId={roomId}
+          roomInstanceId={roomInstanceId}
+          peerId={peerId}
+          spotlight={spotlight}
+          raisedHands={[...raisedHands]}
+        />
+      </header>
+
+      {error && (
+        <p className="mx-4 mb-2 rounded-lg bg-danger/15 px-3 py-2 text-sm text-danger">{error}</p>
       )}
 
-      <div style={{ border: "1px solid #e5e7eb", borderRadius: 6, padding: 12, marginBottom: 16 }}>
-        <strong>Chat</strong>
-        <div
-          data-testid="chat-log"
-          style={{ maxHeight: 160, overflowY: "auto", margin: "8px 0", fontSize: 14 }}
-        >
-          {chat.length === 0 && <span style={{ color: "#9ca3af" }}>No messages yet</span>}
-          {chat.map((message, index) => (
-            <div key={`${message.at}-${index}`}>
-              <strong>{message.from}:</strong> {message.body}
-            </div>
-          ))}
+      <main className="relative flex min-h-0 flex-1 gap-3 px-4 pb-2">
+        <div className="relative min-w-0 flex-1">
+          <VideoGrid participants={tiles} featuredId={spotlightOwner} view={view} />
+          <ReactionOverlay reactions={floating} />
+          {canModerateLobby && (
+            <LobbyRequests
+              waiting={lobby}
+              onAdmit={(id) => void handleAdmit(id)}
+              onDeny={(id) => void handleDeny(id)}
+            />
+          )}
         </div>
-        <form onSubmit={handleSendChat} style={{ display: "flex", gap: 8 }}>
-          <input
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder="Message the room"
-            style={{ flex: 1 }}
-          />
-          <button type="submit" style={btnStyle}>Send</button>
-        </form>
-      </div>
 
-      <EventsPanel events={eventsRef.current} />
+        <SidePanel
+          open={chatOpen}
+          chat={chat}
+          participants={panelParticipants}
+          draft={draft}
+          onDraftChange={setDraft}
+          onSend={handleSendChat}
+          onClose={() => setChatOpen(false)}
+        />
+      </main>
+
+      <footer className="relative flex shrink-0 justify-center px-4 py-3">
+        <ControlBar
+          publishing={publishing}
+          muted={muted}
+          cameraOn={cameraPublication !== null}
+          screenOn={screenPublication !== null}
+          handRaised={handRaised}
+          recordingActive={recording.active}
+          recordingBusy={recordingBusy}
+          canControlRecording={canControlRecording}
+          admitted={state === "admitted"}
+          chatOpen={chatOpen}
+          unreadCount={unread}
+          onPublishMic={() => void handlePublish()}
+          onToggleMute={handleMute}
+          onToggleCamera={() => void handleToggleCamera()}
+          onToggleScreen={() => void handleToggleScreen()}
+          onToggleHand={handleToggleHand}
+          onReaction={handleReaction}
+          onToggleRecording={() => void handleToggleRecording()}
+          onToggleChat={openChat}
+          onLeave={handleLeave}
+        />
+      </footer>
     </div>
   );
 }
-
-const btnStyle: React.CSSProperties = {
-  padding: "8px 16px",
-  fontSize: 14,
-  cursor: "pointer",
-  background: "#4f46e5",
-  color: "#fff",
-  border: "none",
-  borderRadius: 6,
-};
