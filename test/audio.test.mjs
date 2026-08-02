@@ -319,6 +319,11 @@ describe("audio through the SFU", () => {
     );
 
     // Only a host is offered this, so its presence also confirms the token's capability.
+    // Camera on top of the live microphone: two publications on one transport, which is what
+    // used to mint a second SFU participant and fail with "room was not found".
+    await host.getByRole("button", { name: "Start camera" }).click();
+    await host.getByRole("button", { name: "Stop camera" }).waitFor({ timeout: 60_000 });
+
     const record = host.getByTestId("recording-toggle");
     await record.waitFor({ timeout: 30_000 });
     await record.click();
