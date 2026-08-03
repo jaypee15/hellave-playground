@@ -11,7 +11,8 @@
     "test:e2e": "node --env-file-if-exists=.env --test --test-force-exit --test-reporter=spec test/lifecycle.test.mjs",
     "test:audio": "npm run build && node --env-file-if-exists=.env --test --test-force-exit --test-reporter=spec test/audio.test.mjs",
     "test:ui": "npm run build && node --env-file-if-exists=.env --test --test-force-exit --test-reporter=spec test/ui.test.mjs",
-    "test:local": "npm run build && node --env-file=.env.local --test --test-force-exit --test-reporter=spec test/audio.test.mjs"
+    "test:local": "npm run build && node --env-file=.env.local --test --test-force-exit --test-reporter=spec test/audio.test.mjs",
+    "test:long": "npm run build && HELLAVE_TEST_LONG_CALL=1 node --env-file-if-exists=.env --test --test-force-exit --test-reporter=spec test/audio.test.mjs"
   },
   "dependencies": {
     "@hellave/js-sdk": "file:vendor/hellave-js-sdk-0.5.14.tgz",

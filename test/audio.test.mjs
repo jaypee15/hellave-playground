@@ -388,6 +388,54 @@ describe("audio through the SFU", () => {
       .waitFor({ state: "detached", timeout: 60_000 });
   });
 
+  // Opt-in with HELLAVE_TEST_LONG_CALL=1 (npm run test:long), because it cannot be quick: the
+  // media capability lives min(meeting_token_ttl - 1, 120) seconds, so nothing about its
+  // renewal can be shown in under two minutes of real call. Everything else here runs in
+  // seconds, and a call of that length is exactly the gap that let a two-minute expiry and a
+  // five-minute one both reach production.
+  const longCall = process.env["HELLAVE_TEST_LONG_CALL"] === "1" ? it : it.skip;
+  longCall("keeps a call alive past the media capability lifetime", { timeout: 300_000 }, async () => {
+    const host = await newPage("long-host");
+    await host.goto(ORIGIN);
+    await host.getByRole("button", { name: "Create a Room" }).click();
+    await host.getByPlaceholder("Your name").fill("long-host");
+    await host.getByRole("button", { name: /Create & Join|Creating/ }).click();
+    await host.getByTestId("room-instance-id").waitFor({ timeout: 60_000 });
+
+    const publish = host.getByRole("button", { name: "Publish Mic" });
+    await publish.waitFor({ timeout: 60_000 });
+    await publish.click();
+    await waitFor(
+      () => outboundAudio(host),
+      (t) => t.packetsSent > 0,
+      MEDIA_WAIT_MS,
+      "host never sent audio RTP",
+    );
+
+    // Past the 120s capability lifetime, so a session that cannot reissue has already failed.
+    await host.waitForTimeout(150_000);
+
+    // Audio alone proves nothing here: when the capability expires, the SFU refuses the
+    // renegotiation poll but media already flowing carries on regardless, so this test passed
+    // against the bug until it read the event log. What the expiry actually costs is the
+    // control attachment, which surfaces as a degraded state.
+    await host.getByTestId("debug-toggle").click();
+    await host.getByTestId("debug-drawer").waitFor({ timeout: 30_000 });
+    const events = await host.getByTestId("debug-drawer").innerText();
+    assert.ok(
+      !/degraded/i.test(events),
+      `the control attachment degraded during the call:\n${events}`,
+    );
+
+    const errors = host.consoleErrors.join(" | ");
+    assert.ok(
+      !/authentication_failed|Media Capability/i.test(errors),
+      `call did not survive the capability lifetime: ${errors}`,
+    );
+    const after = await outboundAudio(host);
+    assert.ok(after.packetsSent > 0, "audio stopped flowing");
+  });
+
   // A publishing participant is the case that broke: leave took the room's media generation
   // lock and then the publication rollback waited on the same lock, so the server never
   // acknowledged and the lock was never released. Nothing covered it, because every other
