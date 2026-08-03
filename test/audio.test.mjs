@@ -343,6 +343,79 @@ describe("audio through the SFU", () => {
     }
   });
 
+  // Three, because two never caught this. A subscriber needs a fresh m-line for every remote
+  // publication, so it has to be renegotiated once per publisher. With two participants a single
+  // renegotiation covers everything and the suite was green while the earliest joiner in a real
+  // five-person room heard exactly one person: renegotiation_offers_sent was 1 for every
+  // participant in it, ever.
+  //
+  // The order matters. The first page must already be settled with the second before the third
+  // publishes, so the third arrives *after* its one renegotiation rather than inside it.
+  it("carries a third publisher to whoever joined first", CASE_TIMEOUT, async () => {
+    const first = await newPage("first");
+    const second = await newPage("second");
+    const third = await newPage("third");
+
+    await first.goto(ORIGIN);
+    await first.getByRole("button", { name: "Create a Room" }).click();
+    await first.getByPlaceholder("Your name").fill("three-first");
+    await first.getByRole("button", { name: /Create & Join|Creating/ }).click();
+    const roomInstanceId = await first
+      .getByTestId("room-instance-id")
+      .innerText({ timeout: 60_000 });
+
+    const join = async (page, name) => {
+      await page.goto(ORIGIN);
+      await page.getByRole("button", { name: "Join a Room" }).click();
+      await page.getByPlaceholder("Room Instance ID").fill(roomInstanceId);
+      await page.getByPlaceholder("Your name").fill(name);
+      await page.getByRole("button", { name: /^Join$|Joining/ }).click();
+      await page.getByTestId("room-instance-id").waitFor({ timeout: 60_000 });
+    };
+    const publish = async (page) => {
+      const button = page.getByRole("button", { name: "Publish Mic" });
+      await button.waitFor({ timeout: 60_000 });
+      await button.click();
+    };
+
+    await join(second, "three-second");
+    await publish(first);
+    await publish(second);
+
+    // Settle the two-party call first, so the third is unambiguously a later arrival.
+    const beforeThird = await waitFor(
+      () => inboundAudio(first),
+      (t) => t.packetsReceived > 0,
+      MEDIA_WAIT_MS,
+      "the first participant never received the second",
+    );
+
+    await join(third, "three-third");
+    await publish(third);
+
+    // Two inbound audio streams on the first page: one per remote publisher. A count that stays
+    // at one is the bug — the third's m-line was never negotiated onto this transport.
+    const afterThird = await waitFor(
+      () => inboundAudio(first),
+      (t) => t.tracks >= 2 && t.packetsReceived > beforeThird.packetsReceived,
+      MEDIA_WAIT_MS,
+      "the first participant never received the third publisher",
+    );
+    assert.ok(
+      afterThird.tracks >= 2,
+      `expected two inbound audio streams on the first participant, got ${JSON.stringify(afterThird)}`,
+    );
+
+    // And the third must hear the two who were already there.
+    const thirdInbound = await waitFor(
+      () => inboundAudio(third),
+      (t) => t.tracks >= 2,
+      MEDIA_WAIT_MS,
+      "the third participant never received the two already publishing",
+    );
+    assert.ok(thirdInbound.packetsReceived > 0);
+  });
+
   // Microphone only, deliberately: an audio-only capture is the case that used to be
   // rejected at stop with "recording contained no keyframe-safe media".
   it("records a room once media is flowing", CASE_TIMEOUT, async () => {
