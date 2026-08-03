@@ -74,7 +74,7 @@ const WS_SPY = `
         record.transcript.push(arrow + (value.type || "?"));
         // Lifetime notices carry the deadline that governs the session, and a session torn down
         // early looks identical to a negotiation failure from the outside.
-        if (arrow === "<" && /expir|terminat|clos/i.test(value.type || "")) {
+        if (arrow === "<" && /expir|terminat|clos|ice_servers/i.test(value.type || "")) {
           record.notices.push(data.slice(0, 400));
         }
       } catch {
@@ -617,7 +617,13 @@ describe("media through the SFU", () => {
       (t) => t.tracks >= 2 && t.packetsReceived > beforeThird.packetsReceived,
       MEDIA_WAIT_MS,
       "the first participant never received the third publisher",
-    );
+    ).catch(async (error) => {
+      throw new Error(
+        `${error.message}\n  first ICE: ${JSON.stringify(await iceDiagnostics(first))}` +
+          `\n  third ICE: ${JSON.stringify(await iceDiagnostics(third))}` +
+          `\n  third sockets: ${JSON.stringify(await socketReport(third))}`,
+      );
+    });
     assert.ok(
       afterThird.tracks >= 2,
       `expected two inbound audio streams on the first participant, got ${JSON.stringify(afterThird)}`,
