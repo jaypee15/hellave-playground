@@ -26,11 +26,21 @@ let server;
 let browser;
 let shuttingDown = false;
 
-async function newPage(label) {
-  const context = await browser.newContext({ permissions: ["microphone", "camera"] });
+async function newPage(label, { grantMedia = true } = {}) {
+  // grantMedia matters more than it looks. Chrome hides local addresses behind mDNS
+  // `<uuid>.local` hostnames for any page that has not been granted camera or microphone
+  // access, and granting it up front in every test is what hid a bug that broke every
+  // first-time visitor on a fresh origin.
+  const context = await browser.newContext(
+    grantMedia ? { permissions: ["microphone", "camera"] } : {},
+  );
   const page = await context.newPage();
+  page.consoleErrors = [];
   page.on("console", (msg) => {
-    if (msg.type() === "error") process.stderr.write(`[${label}] ${msg.text()}\n`);
+    if (msg.type() === "error") {
+      page.consoleErrors.push(msg.text());
+      process.stderr.write(`[${label}] ${msg.text()}\n`);
+    }
   });
   return page;
 }
@@ -213,6 +223,31 @@ describe("playground interface", () => {
     });
     assert.ok(playing.found, "expected a video element for the local camera");
     assert.ok(playing.width > 0, `expected decoded frames, got ${JSON.stringify(playing)}`);
+  });
+
+  // The state every real visitor is in before they press publish, and the one every other case
+  // here skips by granting permissions up front. Without a grant Chrome offers only mDNS
+  // hostname candidates, which the SFU cannot resolve — it used to refuse them, and signaling
+  // turned that refusal into a fatal error, so joining failed a second after admission while
+  // working perfectly for anyone who had already allowed the microphone.
+  it("admits a first-time visitor who has granted no media permission", async () => {
+    const page = await newPage("no-permission", { grantMedia: false });
+    await page.goto(ORIGIN);
+    await page.getByRole("button", { name: "Create a Room" }).click();
+    await page.getByPlaceholder("Your name").fill("no-permission");
+    await page.getByRole("button", { name: /Create & Join|Creating/ }).click();
+    await page.getByTestId("conference-state").getByText("admitted").waitFor({ timeout: 60_000 });
+
+    // Long enough for candidate gathering to finish and for any refusal to come back and
+    // terminate the attachment, which is how this failed: admitted, then dead.
+    await page.waitForTimeout(6_000);
+    assert.equal(
+      await page.getByTestId("conference-state").innerText(),
+      "admitted",
+      "an unusable ICE candidate must not end the session",
+    );
+    const fatal = page.consoleErrors.filter((text) => /Hellave error/.test(text));
+    assert.deepEqual(fatal, [], "no control error should reach a first-time visitor");
   });
 
   // Rooms have no names, so the only way to invite somebody used to be reading a 36-character
