@@ -49,39 +49,99 @@ const PC_SPY = `
   Object.assign(window.RTCPeerConnection, Native);
 `;
 
-/** Sum inbound audio RTP across every peer connection on the page. */
-async function inboundAudio(page) {
-  return page.evaluate(async () => {
-    const totals = { packetsReceived: 0, bytesReceived: 0, tracks: 0 };
-    for (const pc of window.__hellavePCs ?? []) {
-      const stats = await pc.getStats();
-      stats.forEach((report) => {
-        if (report.type === "inbound-rtp" && report.kind === "audio") {
+/**
+ * Record why the control WebSocket closed.
+ *
+ * The server can close the socket without logging anything, and the SDK reports only that "the
+ * Public Edge connection closed" — so without the close code a dropped control connection is
+ * indistinguishable from a negotiation bug. 1009 means the message was too large, 1011 an
+ * internal error, 1006 an abnormal close with no frame at all.
+ */
+const WS_SPY = `
+  window.__hellaveSockets = [];
+  const NativeWS = window.WebSocket;
+  window.WebSocket = function (...args) {
+    const ws = new NativeWS(...args);
+    const record = { url: String(args[0]), closed: null, largestSent: 0, sent: 0 };
+    window.__hellaveSockets.push(record);
+    const send = ws.send.bind(ws);
+    ws.send = (data) => {
+      const size = typeof data === "string" ? new Blob([data]).size : (data.byteLength ?? 0);
+      record.sent += 1;
+      record.largestSent = Math.max(record.largestSent, size);
+      return send(data);
+    };
+    ws.addEventListener("close", (event) => {
+      record.closed = { code: event.code, reason: event.reason, wasClean: event.wasClean };
+    });
+    return ws;
+  };
+  window.WebSocket.prototype = NativeWS.prototype;
+  Object.assign(window.WebSocket, NativeWS);
+`;
+
+/** What happened on this page's control sockets: how much was sent, and why they closed. */
+async function socketReport(page) {
+  return page.evaluate(() =>
+    (window.__hellaveSockets ?? []).map((s) => ({
+      largestSent: s.largestSent,
+      messages: s.sent,
+      closed: s.closed,
+    })),
+  );
+}
+
+/**
+ * Sum RTP of one direction and kind across every peer connection on the page.
+ *
+ * `tracks` counts the receivers or senders carrying that kind, which is the measurement that
+ * matters for a subscriber: one m-line is negotiated per remote publication, so a page that can
+ * see three cameras but only ever has one inbound video track has not been renegotiated.
+ *
+ * Video-only: a receiver reports `inbound-rtp` for a track that was negotiated but never carried
+ * a frame, so packet counts have to be checked as well as track counts.
+ */
+async function rtpTotals(page, direction, kind) {
+  return page.evaluate(
+    async ([direction, kind]) => {
+      const sent = direction === "outbound";
+      const totals = sent
+        ? { packetsSent: 0, bytesSent: 0, tracks: 0 }
+        : { packetsReceived: 0, bytesReceived: 0, tracks: 0 };
+      for (const pc of window.__hellavePCs ?? []) {
+        const stats = await pc.getStats();
+        stats.forEach((report) => {
+          if (report.type !== `${direction}-rtp` || report.kind !== kind) return;
           totals.tracks += 1;
-          totals.packetsReceived += report.packetsReceived ?? 0;
-          totals.bytesReceived += report.bytesReceived ?? 0;
-        }
-      });
-    }
-    return totals;
-  });
+          if (sent) {
+            totals.packetsSent += report.packetsSent ?? 0;
+            totals.bytesSent += report.bytesSent ?? 0;
+          } else {
+            totals.packetsReceived += report.packetsReceived ?? 0;
+            totals.bytesReceived += report.bytesReceived ?? 0;
+          }
+        });
+      }
+      return totals;
+    },
+    [direction, kind],
+  );
+}
+
+async function inboundAudio(page) {
+  return rtpTotals(page, "inbound", "audio");
 }
 
 async function outboundAudio(page) {
-  return page.evaluate(async () => {
-    const totals = { packetsSent: 0, bytesSent: 0, tracks: 0 };
-    for (const pc of window.__hellavePCs ?? []) {
-      const stats = await pc.getStats();
-      stats.forEach((report) => {
-        if (report.type === "outbound-rtp" && report.kind === "audio") {
-          totals.tracks += 1;
-          totals.packetsSent += report.packetsSent ?? 0;
-          totals.bytesSent += report.bytesSent ?? 0;
-        }
-      });
-    }
-    return totals;
-  });
+  return rtpTotals(page, "outbound", "audio");
+}
+
+async function inboundVideo(page) {
+  return rtpTotals(page, "inbound", "video");
+}
+
+async function outboundVideo(page) {
+  return rtpTotals(page, "outbound", "video");
 }
 
 /**
@@ -181,6 +241,7 @@ async function newPage(label) {
   const context = await browser.newContext({ permissions: ["microphone", "camera"] });
   const page = await context.newPage();
   await page.addInitScript(PC_SPY);
+  await page.addInitScript(WS_SPY);
   page.consoleErrors = [];
   page.on("console", (msg) => {
     if (msg.type() === "error") {
@@ -191,7 +252,61 @@ async function newPage(label) {
   return page;
 }
 
-describe("audio through the SFU", () => {
+/** Create a room and return its instance id. */
+async function createRoom(page, name) {
+  await page.goto(ORIGIN);
+  await page.getByRole("button", { name: "Create a Room" }).click();
+  await page.getByPlaceholder("Your name").fill(name);
+  await page.getByRole("button", { name: /Create & Join|Creating/ }).click();
+  return page.getByTestId("room-instance-id").innerText({ timeout: 60_000 });
+}
+
+async function joinRoom(page, roomInstanceId, name) {
+  await page.goto(ORIGIN);
+  await page.getByRole("button", { name: "Join a Room" }).click();
+  await page.getByPlaceholder("Room Instance ID").fill(roomInstanceId);
+  await page.getByPlaceholder("Your name").fill(name);
+  await page.getByRole("button", { name: /^Join$|Joining/ }).click();
+  await page.getByTestId("room-instance-id").waitFor({ timeout: 60_000 });
+}
+
+/**
+ * The app's own event log.
+ *
+ * Publish failures are reported with addEvent and never reach the console, so a test that only
+ * watches console errors sees a silent timeout instead of the reason. Any assertion about
+ * publishing needs this to say anything useful.
+ */
+async function appEvents(page) {
+  const drawer = page.getByTestId("debug-drawer");
+  if (!(await drawer.isVisible().catch(() => false))) {
+    await page.getByTestId("debug-toggle").click().catch(() => {});
+    await drawer.waitFor({ timeout: 30_000 }).catch(() => {});
+  }
+  return drawer.innerText().catch(() => "(no event log available)");
+}
+
+/** Turn on the camera and wait until it is actually sending, not merely toggled. */
+async function startCamera(page, label) {
+  const toggle = page.getByTestId("camera-toggle");
+  await toggle.waitFor({ timeout: 60_000 });
+  await toggle.click();
+  try {
+    await waitFor(
+      () => outboundVideo(page),
+      (t) => t.packetsSent > 0,
+      MEDIA_WAIT_MS,
+      `${label} never sent camera RTP`,
+    );
+  } catch (error) {
+    const sockets = JSON.stringify(await socketReport(page));
+    throw new Error(
+      `${error.message}\n${label} control sockets: ${sockets}\n${label} event log:\n${await appEvents(page)}`,
+    );
+  }
+}
+
+describe("media through the SFU", () => {
   before(async () => {
     assert.ok(API_KEY, "HELLAVE_API_KEY must be set");
     assert.ok(
@@ -225,6 +340,10 @@ describe("audio through the SFU", () => {
         "--use-fake-device-for-media-stream",
         "--use-fake-ui-for-media-stream",
         "--autoplay-policy=no-user-gesture-required",
+        // getDisplayMedia otherwise opens a picker no test can click. The SDK requests plain
+        // { video: true } rather than preferring the current tab, so the desktop source is what
+        // has to be auto-selected.
+        "--auto-select-desktop-capture-source=Entire screen",
       ],
     });
   });
@@ -445,6 +564,125 @@ describe("audio through the SFU", () => {
       "the third participant never received the two already publishing",
     );
     assert.ok(thirdInbound.packetsReceived > 0);
+  });
+
+  // Cameras, not microphones. Everything above measures audio, and video is not the same path:
+  // it carries simulcast layers, it is subject to a per-subscriber video slot budget the SFU
+  // enforces separately, and a video receiver reports inbound-rtp for a track that was
+  // negotiated but never carried a frame. So "only one person can have video at a time" is
+  // invisible to every audio assertion in this file.
+  it("carries two cameras between two publishers", CASE_TIMEOUT, async () => {
+    const host = await newPage("cam-host");
+    const guest = await newPage("cam-guest");
+
+    const roomInstanceId = await createRoom(host, "cam-host");
+    await joinRoom(guest, roomInstanceId, "cam-guest");
+
+    await startCamera(host, "cam-host");
+    await startCamera(guest, "cam-guest");
+
+    // Frames, not just a negotiated m-line: packetsReceived is what separates a subscription
+    // that works from one that was set up and left empty.
+    for (const [page, label] of [
+      [host, "host"],
+      [guest, "guest"],
+    ]) {
+      const received = await waitFor(
+        () => inboundVideo(page),
+        (t) => t.tracks >= 1 && t.packetsReceived > 0,
+        MEDIA_WAIT_MS,
+        `${label} received no camera video`,
+      );
+      assert.ok(
+        received.bytesReceived > 0,
+        `${label} saw an empty video track: ${JSON.stringify(received)}`,
+      );
+    }
+  });
+
+  // The reported bug: "only one person can have video on at the same time". Three cameras is the
+  // smallest room that can show it — with two, one inbound video track per page is both the
+  // correct answer and the broken one, so the count cannot distinguish them.
+  it("carries three cameras at once", CASE_TIMEOUT, async () => {
+    const first = await newPage("cam3-first");
+    const second = await newPage("cam3-second");
+    const third = await newPage("cam3-third");
+
+    const roomInstanceId = await createRoom(first, "cam3-first");
+    await joinRoom(second, roomInstanceId, "cam3-second");
+    await joinRoom(third, roomInstanceId, "cam3-third");
+
+    await startCamera(first, "cam3-first");
+    await startCamera(second, "cam3-second");
+    await startCamera(third, "cam3-third");
+
+    // Every page must see both other cameras carrying frames. One track apiece is the symptom.
+    for (const [page, label] of [
+      [first, "first"],
+      [second, "second"],
+      [third, "third"],
+    ]) {
+      const received = await waitFor(
+        () => inboundVideo(page),
+        (t) => t.tracks >= 2 && t.packetsReceived > 0,
+        MEDIA_WAIT_MS,
+        `${label} did not receive both other cameras`,
+      );
+      assert.ok(
+        received.tracks >= 2,
+        `${label} saw ${received.tracks} camera(s), expected 2: ${JSON.stringify(received)}`,
+      );
+    }
+  });
+
+  // A screen share is a second video publication from a participant that already has one, so it
+  // is the case where one peer must be renegotiated onto two inbound video m-lines from the same
+  // publisher — distinct from two publishers with one camera each.
+  it("carries a screen share alongside the sharer's camera", CASE_TIMEOUT, async () => {
+    const sharer = await newPage("share-sharer");
+    const viewer = await newPage("share-viewer");
+
+    const roomInstanceId = await createRoom(sharer, "share-sharer");
+    await joinRoom(viewer, roomInstanceId, "share-viewer");
+
+    await startCamera(sharer, "share-sharer");
+    const beforeShare = await waitFor(
+      () => inboundVideo(viewer),
+      (t) => t.tracks >= 1 && t.packetsReceived > 0,
+      MEDIA_WAIT_MS,
+      "the viewer never received the sharer's camera",
+    );
+
+    const screenToggle = sharer.getByTestId("screen-toggle");
+    await screenToggle.waitFor({ timeout: 60_000 });
+    await screenToggle.click();
+    // Surfaced explicitly: if the picker could not be auto-selected, getDisplayMedia rejects and
+    // the app reports it rather than throwing, so the failure would otherwise look like a
+    // negotiation problem.
+    await sharer.getByTestId("debug-toggle").click();
+    await sharer.getByTestId("debug-drawer").waitFor({ timeout: 30_000 });
+    await waitFor(
+      async () => sharer.getByTestId("debug-drawer").innerText(),
+      (text) => /Screen shared/i.test(text) || /Screen share failed/i.test(text),
+      MEDIA_WAIT_MS,
+      "the sharer neither shared nor reported a failure",
+    );
+    const shareEvents = await sharer.getByTestId("debug-drawer").innerText();
+    assert.ok(
+      !/Screen share failed/i.test(shareEvents),
+      `screen capture did not start:\n${shareEvents}`,
+    );
+
+    const afterShare = await waitFor(
+      () => inboundVideo(viewer),
+      (t) => t.tracks >= 2 && t.packetsReceived > beforeShare.packetsReceived,
+      MEDIA_WAIT_MS,
+      "the viewer never received the screen share alongside the camera",
+    );
+    assert.ok(
+      afterShare.tracks >= 2,
+      `expected camera and screen on the viewer, got ${JSON.stringify(afterShare)}`,
+    );
   });
 
   // The case above with time added, which is the only difference that matters and the reason
