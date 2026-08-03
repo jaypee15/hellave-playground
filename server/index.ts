@@ -47,6 +47,55 @@ app.post("/api/create-room", async (req, res) => {
   }
 });
 
+/**
+ * Mint a fresh meeting token for a peer that already has an identity.
+ *
+ * A meeting token only authorises joining and is deliberately short-lived, so the SDK asks its
+ * tokenProvider for a new one on every attach and on every reconnect. Handing back a captured
+ * token instead — which this app used to do — means a reconnect presents an expired credential
+ * and fails.
+ *
+ * The peerId is supplied by the caller rather than derived: slugify() appends a fresh uuid, so
+ * minting by display name would return a *different* peer and the room would see a stranger.
+ */
+app.post("/api/token", async (req, res) => {
+  try {
+    const { roomInstanceId, displayName, peerId } = req.body;
+    if (!roomInstanceId || !displayName || !peerId) {
+      res.status(400).json({ error: "roomInstanceId, displayName and peerId are required" });
+      return;
+    }
+    const role = req.body["role"] ?? "participant";
+    const isHost = role === "host";
+    const token = await api.issueMeetingToken(roomInstanceId, {
+      peerId,
+      sessionId: crypto.randomUUID(),
+      profile: { displayName, avatarUrl: null },
+      role,
+      capabilities: {
+        publishAudio: true,
+        publishVideo: true,
+        shareScreen: true,
+        sendMessages: true,
+        moderateLobby: isHost,
+        moderateParticipants: isHost,
+        setSpotlight: isHost,
+        controlRecording: isHost,
+        updateProfile: true,
+      },
+      // Never the lobby on a refresh: this peer has already been admitted, and asking to be
+      // placed in the lobby again would send them back to waiting.
+      lobby: false,
+    });
+    res.json({ token: token.token, expiresAt: token.expiresAt });
+  } catch (err: unknown) {
+    const status = err instanceof Error && "status" in err
+      ? (err as { status: number }).status
+      : 500;
+    res.status(status).json({ error: err instanceof Error ? err.message : "Unknown error" });
+  }
+});
+
 app.post("/api/join-room", async (req, res) => {
   try {
     const { roomInstanceId, displayName } = req.body;

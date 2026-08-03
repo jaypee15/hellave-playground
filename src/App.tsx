@@ -13,6 +13,35 @@ type Screen =
       peerId: string;
     };
 
+/**
+ * Ask our own backend for a fresh meeting token whenever the SDK needs one.
+ *
+ * Returning a captured token instead — which this did — defeats the point of a short-lived join
+ * credential: the SDK calls this again on every reconnect, and a token minted minutes ago has
+ * expired by then. The peerId must be carried through, because the server derives a new one from
+ * the display name and the room would see a different participant.
+ */
+function tokenRefresher(
+  roomInstanceId: string,
+  displayName: string,
+  peerId: string,
+  role: string,
+): HellaveConfig["tokenProvider"] {
+  return async () => {
+    const res = await fetch("/api/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ roomInstanceId, displayName, peerId, role }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error ?? "Failed to refresh the meeting token");
+    }
+    const { token } = await res.json();
+    return { token };
+  };
+}
+
 export default function App() {
   const [screen, setScreen] = useState<Screen>({ name: "home" });
 
@@ -26,13 +55,13 @@ export default function App() {
       const err = await res.json();
       throw new Error(err.error ?? "Failed to create room");
     }
-    const { token, roomInstanceId, roomId, peerId, controlUrl } = await res.json();
+    const { roomInstanceId, roomId, peerId, controlUrl } = await res.json();
     // Told by the server rather than hardcoded, so the browser always attaches to the same
     // stack that minted the token. Pointing them at different deployments produces an
     // authentication failure that looks nothing like a configuration mistake.
     const config: HellaveConfig = {
       controlUrl,
-      tokenProvider: async () => ({ token }),
+      tokenProvider: tokenRefresher(roomInstanceId, displayName, peerId, "host"),
     };
     const client = new HellaveClient(config);
     setScreen({ name: "conference", client, roomId, roomInstanceId, peerId });
@@ -48,10 +77,10 @@ export default function App() {
       const err = await res.json();
       throw new Error(err.error ?? "Failed to join room");
     }
-    const { token, roomId, peerId, controlUrl } = await res.json();
+    const { roomId, peerId, controlUrl } = await res.json();
     const config: HellaveConfig = {
       controlUrl,
-      tokenProvider: async () => ({ token }),
+      tokenProvider: tokenRefresher(roomInstanceId, displayName, peerId, "participant"),
     };
     const client = new HellaveClient(config);
     setScreen({ name: "conference", client, roomId, roomInstanceId, peerId });

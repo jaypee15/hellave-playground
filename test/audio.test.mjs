@@ -388,13 +388,16 @@ describe("audio through the SFU", () => {
       .waitFor({ state: "detached", timeout: 60_000 });
   });
 
-  // Opt-in with HELLAVE_TEST_LONG_CALL=1 (npm run test:long), because it cannot be quick: the
-  // media capability lives min(meeting_token_ttl - 1, 120) seconds, so nothing about its
-  // renewal can be shown in under two minutes of real call. Everything else here runs in
-  // seconds, and a call of that length is exactly the gap that let a two-minute expiry and a
-  // five-minute one both reach production.
+  // Opt-in with HELLAVE_TEST_LONG_CALL=1 (npm run test:long). It cannot be instant — the point
+  // is to outlive credentials — but the local stack deliberately runs a 60s meeting token so
+  // ninety seconds is enough to cross both the join token and several capability lifetimes.
+  // Against a production-shaped 300s token this needs the full CALL_SECONDS below instead.
+  //
+  // A call of any real length is exactly the gap that let a two-minute expiry and a five-minute
+  // one both reach production: everything else in this file finishes in seconds.
   const longCall = process.env["HELLAVE_TEST_LONG_CALL"] === "1" ? it : it.skip;
-  longCall("keeps a call alive past the media capability lifetime", { timeout: 300_000 }, async () => {
+  const CALL_SECONDS = Number(process.env["HELLAVE_TEST_CALL_SECONDS"] ?? 150);
+  longCall("outlives the credentials it was established with", { timeout: 600_000 }, async () => {
     const host = await newPage("long-host");
     await host.goto(ORIGIN);
     await host.getByRole("button", { name: "Create a Room" }).click();
@@ -412,8 +415,9 @@ describe("audio through the SFU", () => {
       "host never sent audio RTP",
     );
 
-    // Past the 120s capability lifetime, so a session that cannot reissue has already failed.
-    await host.waitForTimeout(150_000);
+    // Past the join token's lifetime and several capability lifetimes, so a session that cannot
+    // reissue, or that is still bounded by the token it arrived with, has already failed.
+    await host.waitForTimeout(CALL_SECONDS * 1000);
 
     // Audio alone proves nothing here: when the capability expires, the SFU refuses the
     // renegotiation poll but media already flowing carries on regardless, so this test passed
@@ -429,8 +433,8 @@ describe("audio through the SFU", () => {
 
     const errors = host.consoleErrors.join(" | ");
     assert.ok(
-      !/authentication_failed|Media Capability/i.test(errors),
-      `call did not survive the capability lifetime: ${errors}`,
+      !/authentication_failed|Meeting Token expired|Media Capability/i.test(errors),
+      `call did not survive its credentials: ${errors}`,
     );
     const after = await outboundAudio(host);
     assert.ok(after.packetsSent > 0, "audio stopped flowing");
