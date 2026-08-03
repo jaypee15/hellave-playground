@@ -369,7 +369,14 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
   };
 
   const handleLeave = () => {
-    client.leave();
+    // Fire-and-forget on purpose — the person is leaving, so nothing is gained by making them
+    // wait on the acknowledgement. But the rejection has to be handled: unhandled, a server
+    // that never acknowledges a leave showed up only as an unhandled promise rejection, which
+    // is how a leave deadlock went unnoticed.
+    client.leave().catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : "Unknown";
+      console.error(`Leave failed: ${message}`);
+    });
     onLeave();
   };
 

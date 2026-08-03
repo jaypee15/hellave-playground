@@ -150,8 +150,12 @@ async function newPage(label) {
   const context = await browser.newContext({ permissions: ["microphone", "camera"] });
   const page = await context.newPage();
   await page.addInitScript(PC_SPY);
+  page.consoleErrors = [];
   page.on("console", (msg) => {
-    if (msg.type() === "error") process.stderr.write(`[${label}] ${msg.text()}\n`);
+    if (msg.type() === "error") {
+      page.consoleErrors.push(msg.text());
+      process.stderr.write(`[${label}] ${msg.text()}\n`);
+    }
   });
   return page;
 }
@@ -382,5 +386,43 @@ describe("audio through the SFU", () => {
     await host
       .getByTestId("recording-indicator")
       .waitFor({ state: "detached", timeout: 60_000 });
+  });
+
+  // A publishing participant is the case that broke: leave took the room's media generation
+  // lock and then the publication rollback waited on the same lock, so the server never
+  // acknowledged and the lock was never released. Nothing covered it, because every other
+  // case here ends by closing the browser rather than by leaving.
+  it("acknowledges a leave from a participant that is publishing", CASE_TIMEOUT, async () => {
+    const host = await newPage("leave-host");
+    await host.goto(ORIGIN);
+    await host.getByRole("button", { name: "Create a Room" }).click();
+    await host.getByPlaceholder("Your name").fill("leave-host");
+    await host.getByRole("button", { name: /Create & Join|Creating/ }).click();
+    await host.getByTestId("room-instance-id").waitFor({ timeout: 60_000 });
+
+    const publish = host.getByRole("button", { name: "Publish Mic" });
+    await publish.waitFor({ timeout: 60_000 });
+    await publish.click();
+    await waitFor(
+      () => outboundAudio(host),
+      (t) => t.packetsSent > 0,
+      MEDIA_WAIT_MS,
+      "host never sent audio RTP, so the leave would not carry a publication",
+    );
+
+    await host.getByRole("button", { name: "Leave" }).click();
+    await host
+      .getByRole("button", { name: "Create a Room" })
+      .waitFor({ timeout: 30_000 });
+
+    // The acknowledgement is what is under test, and the SDK only gives up on it after its
+    // 10s command timeout — so the verdict is not in until that window has passed.
+    await host.waitForTimeout(13_000);
+    const failures = host.consoleErrors.filter((text) => text.includes("Leave failed"));
+    assert.deepEqual(
+      failures,
+      [],
+      "the server did not acknowledge a publishing participant's leave",
+    );
   });
 });
