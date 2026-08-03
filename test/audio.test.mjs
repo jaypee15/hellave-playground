@@ -84,6 +84,37 @@ async function outboundAudio(page) {
   });
 }
 
+/**
+ * How long a media capability lives on the stack under test.
+ *
+ * Signaling derives it as min(meeting_token_ttl - 1, 120), and the meeting token's own lifetime
+ * is whatever that deployment configured — 60s locally, 300s in production. A test that must
+ * outlive a capability therefore cannot hardcode the wait: it reads the token's expiry off a
+ * freshly minted one and applies the same formula.
+ */
+async function capabilitySeconds(roomInstanceId) {
+  const response = await fetch(`${ORIGIN}/api/token`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      roomInstanceId,
+      displayName: "capability-probe",
+      peerId: `capability-probe-${Date.now()}`,
+      sessionId: `capability-probe-${Date.now()}`,
+    }),
+  });
+  assert.ok(response.ok, `could not mint a probe token: HTTP ${response.status}`);
+  const { expiresAt } = await response.json();
+  // expiresAt is epoch seconds or an ISO timestamp depending on the API version; both parse.
+  const expiresMs = Number.isFinite(Number(expiresAt))
+    ? Number(expiresAt) * 1000
+    : Date.parse(expiresAt);
+  assert.ok(Number.isFinite(expiresMs), `unreadable token expiry: ${expiresAt}`);
+  const tokenSeconds = Math.round((expiresMs - Date.now()) / 1000);
+  assert.ok(tokenSeconds > 1, `probe token was already expiring: ${tokenSeconds}s`);
+  return Math.min(tokenSeconds - 1, 120);
+}
+
 /** Poll until the predicate holds, so a slow ICE handshake is not a failure. */
 async function waitFor(fn, predicate, timeoutMs, label) {
   const deadline = Date.now() + timeoutMs;
@@ -210,9 +241,9 @@ describe("audio through the SFU", () => {
     }
   });
 
-  // KNOWN FAILING. A media session is still created only by publishing, so a listener never
-  // gets an SFU transport: the SFU logs peers_in_room=1 for a room with two participants.
-  // Left in place because it encodes the behaviour we want and is the regression test for it.
+  // Was KNOWN FAILING: a media session used to be created only by publishing, so a listener never
+  // got an SFU transport and the SFU logged peers_in_room=1 for a room with two participants. It
+  // passes now — verified receiving RTP, not merely not erroring.
   it("carries audio to a listener that publishes nothing", CASE_TIMEOUT, async () => {
     // A participant who joins only to listen must hear the room.
     const host = await newPage("listen-host");
@@ -415,6 +446,95 @@ describe("audio through the SFU", () => {
     );
     assert.ok(thirdInbound.packetsReceived > 0);
   });
+
+  // The case above with time added, which is the only difference that matters and the reason
+  // this bug shipped anyway.
+  //
+  // The SFU stamps each participant's identity binding with the expiry of the media capability
+  // it arrived with, and prunes expired bindings when the *next* participant binds. So the
+  // trigger needs both halves at once: a participant older than one capability lifetime, and
+  // somebody new arriving. Every other case in this file finishes inside twenty seconds, so
+  // nothing was ever old enough; the long-call case is old enough but has a single participant,
+  // so nothing ever binds to run the prune. Neither half is a bug on its own, which is exactly
+  // why a suite full of both was green while the earliest joiner in a real room went deaf.
+  //
+  // The wait is measured, not hardcoded: the fuse is min(meeting_token_ttl - 1, 120) seconds, so
+  // it is 65s against the local stack's 60s token and 125s against a production-shaped 300s one.
+  it(
+    "carries a publisher that arrives after the first participant's capability expired",
+    { timeout: 420_000 },
+    async () => {
+      const first = await newPage("expiry-first");
+      const second = await newPage("expiry-second");
+      const third = await newPage("expiry-third");
+
+      await first.goto(ORIGIN);
+      await first.getByRole("button", { name: "Create a Room" }).click();
+      await first.getByPlaceholder("Your name").fill("expiry-first");
+      await first.getByRole("button", { name: /Create & Join|Creating/ }).click();
+      const roomInstanceId = await first
+        .getByTestId("room-instance-id")
+        .innerText({ timeout: 60_000 });
+
+      const join = async (page, name) => {
+        await page.goto(ORIGIN);
+        await page.getByRole("button", { name: "Join a Room" }).click();
+        await page.getByPlaceholder("Room Instance ID").fill(roomInstanceId);
+        await page.getByPlaceholder("Your name").fill(name);
+        await page.getByRole("button", { name: /^Join$|Joining/ }).click();
+        await page.getByTestId("room-instance-id").waitFor({ timeout: 60_000 });
+      };
+      const publish = async (page) => {
+        const button = page.getByRole("button", { name: "Publish Mic" });
+        await button.waitFor({ timeout: 60_000 });
+        await button.click();
+      };
+
+      await join(second, "expiry-second");
+      await publish(first);
+      await publish(second);
+
+      const beforeThird = await waitFor(
+        () => inboundAudio(first),
+        (t) => t.packetsReceived > 0,
+        MEDIA_WAIT_MS,
+        "the first participant never received the second",
+      );
+
+      // Ask the stack how long its capabilities live rather than assuming, so this stays correct
+      // against a local 60s token and a deployed 300s one. A probe token is minted for a peer
+      // that never connects, which is inert — it is read for its expiry and discarded.
+      await first.waitForTimeout((await capabilitySeconds(roomInstanceId)) * 1000 + 5_000);
+
+      await join(third, "expiry-third");
+      await publish(third);
+
+      // Same assertion as the case above. What it catches here is different: the first
+      // participant's binding has outlived the capability it arrived with, and the third's
+      // arrival is what sweeps it away — so the renegotiation poll gets 403 and this count stays
+      // at one for a participant that is otherwise perfectly healthy.
+      const afterThird = await waitFor(
+        () => inboundAudio(first),
+        (t) => t.tracks >= 2 && t.packetsReceived > beforeThird.packetsReceived,
+        MEDIA_WAIT_MS,
+        "the first participant went deaf to later arrivals once its capability expired",
+      );
+      assert.ok(
+        afterThird.tracks >= 2,
+        `expected two inbound audio streams on the first participant, got ${JSON.stringify(afterThird)}`,
+      );
+
+      // The first participant must also still be heard. Media already flowing survives a refused
+      // poll, so audio in one direction is not evidence the session is intact.
+      const secondInbound = await waitFor(
+        () => inboundAudio(second),
+        (t) => t.tracks >= 2,
+        MEDIA_WAIT_MS,
+        "the second participant never received the third",
+      );
+      assert.ok(secondInbound.packetsReceived > 0);
+    },
+  );
 
   // Microphone only, deliberately: an audio-only capture is the case that used to be
   // rejected at stop with "recording contained no keyframe-safe media".
