@@ -16,7 +16,7 @@
  * Requires a build (`npm run build`) — the express server serves dist/ and /api on one
  * origin, so the browser sees the same-origin setup production uses.
  */
-import { after, before, describe, it } from "node:test";
+import { after, afterEach, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -62,15 +62,56 @@ const WS_SPY = `
   const NativeWS = window.WebSocket;
   window.WebSocket = function (...args) {
     const ws = new NativeWS(...args);
-    const record = { url: String(args[0]), closed: null, largestSent: 0, sent: 0 };
+    const record = { url: String(args[0]), closed: null, largestSent: 0, sent: 0, rejected: [], transcript: [], notices: [] };
     window.__hellaveSockets.push(record);
     const send = ws.send.bind(ws);
+    const note = (arrow, data) => {
+      if (record.transcript.length >= 120 || typeof data !== "string") return;
+      try {
+        const value = JSON.parse(data);
+        // Concatenation, not a template literal: this whole spy is itself a template literal, so
+        // an inner placeholder would be interpolated by the outer one at module load.
+        record.transcript.push(arrow + (value.type || "?"));
+        // Lifetime notices carry the deadline that governs the session, and a session torn down
+        // early looks identical to a negotiation failure from the outside.
+        if (arrow === "<" && /expir|terminat|clos/i.test(value.type || "")) {
+          record.notices.push(data.slice(0, 400));
+        }
+      } catch {
+        record.transcript.push(arrow + "unparseable");
+      }
+    };
     ws.send = (data) => {
       const size = typeof data === "string" ? new Blob([data]).size : (data.byteLength ?? 0);
       record.sent += 1;
       record.largestSent = Math.max(record.largestSent, size);
+      note(">", data);
       return send(data);
     };
+    // Anything the SDK would reject as "an invalid message", kept verbatim. A server message that
+    // fails to parse is otherwise reported only as that phrase, which cannot distinguish a
+    // truncated frame from a binary one from a valid message the SDK simply did not expect.
+    ws.addEventListener("message", (event) => {
+      const data = event.data;
+      note("<", data);
+      if (typeof data !== "string") {
+        record.rejected.push({ kind: typeof data, size: data?.size ?? data?.byteLength ?? null });
+        return;
+      }
+      try {
+        const value = JSON.parse(data);
+        if (!value || typeof value.type !== "string") {
+          record.rejected.push({ kind: "no-type", size: data.length, head: data.slice(0, 200) });
+        }
+      } catch {
+        record.rejected.push({
+          kind: "unparseable",
+          size: data.length,
+          head: data.slice(0, 120),
+          tail: data.slice(-120),
+        });
+      }
+    });
     ws.addEventListener("close", (event) => {
       record.closed = { code: event.code, reason: event.reason, wasClean: event.wasClean };
     });
@@ -87,6 +128,9 @@ async function socketReport(page) {
       largestSent: s.largestSent,
       messages: s.sent,
       closed: s.closed,
+      rejected: s.rejected,
+      transcript: s.transcript,
+      notices: s.notices,
     })),
   );
 }
@@ -237,8 +281,19 @@ async function iceDiagnostics(page) {
   });
 }
 
+/**
+ * Contexts opened by the running case, closed when it ends.
+ *
+ * Cases used to leave every browser context open until the whole file finished, so a participant
+ * from the first case was still in its room during the last one. Closing a tab is a leave, so
+ * they really were live sessions: by the end of a run the node was holding every participant the
+ * suite had ever created, and cases began timing out in an order that varied run to run.
+ */
+let openContexts = [];
+
 async function newPage(label) {
   const context = await browser.newContext({ permissions: ["microphone", "camera"] });
+  openContexts.push(context);
   const page = await context.newPage();
   await page.addInitScript(PC_SPY);
   await page.addInitScript(WS_SPY);
@@ -346,6 +401,14 @@ describe("media through the SFU", () => {
         "--auto-select-desktop-capture-source=Entire screen",
       ],
     });
+  });
+
+  // Every case leaves the room it created, so the next one starts against an empty node rather
+  // than inheriting every participant the suite has opened so far.
+  afterEach(async () => {
+    const contexts = openContexts;
+    openContexts = [];
+    await Promise.all(contexts.map((context) => context.close().catch(() => {})));
   });
 
   after(async () => {
@@ -461,7 +524,11 @@ describe("media through the SFU", () => {
       );
     } catch (error) {
       const diag = await iceDiagnostics(guest);
-      throw new Error(`${error.message}\n  guest ICE: ${JSON.stringify(diag)}`);
+      const sockets = await socketReport(guest);
+      throw new Error(
+        `${error.message}\n  guest ICE: ${JSON.stringify(diag)}` +
+          `\n  guest sockets: ${JSON.stringify(sockets)}`,
+      );
     }
     assert.ok(
       received.bytesReceived > 0,
