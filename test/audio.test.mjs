@@ -533,6 +533,24 @@ describe("audio through the SFU", () => {
         "the second participant never received the third",
       );
       assert.ok(secondInbound.packetsReceived > 0);
+
+      // Inherited from the long-call case this replaced. Receiving tracks proves the
+      // renegotiation worked; these two prove the session did not merely limp there. A capability
+      // that failed to reissue shows up as a degraded control attachment and as a credential
+      // error on the console, and neither stops media that is already flowing — which is how a
+      // broken session passed an audio-only assertion before.
+      await first.getByTestId("debug-toggle").click();
+      await first.getByTestId("debug-drawer").waitFor({ timeout: 30_000 });
+      const events = await first.getByTestId("debug-drawer").innerText();
+      assert.ok(
+        !/degraded/i.test(events),
+        `the control attachment degraded while outliving its capability:\n${events}`,
+      );
+      const errors = first.consoleErrors.join(" | ");
+      assert.ok(
+        !/authentication_failed|Meeting Token expired|Media Capability/i.test(errors),
+        `the session did not survive its credentials: ${errors}`,
+      );
     },
   );
 
@@ -579,58 +597,6 @@ describe("audio through the SFU", () => {
     await host
       .getByTestId("recording-indicator")
       .waitFor({ state: "detached", timeout: 60_000 });
-  });
-
-  // Opt-in with HELLAVE_TEST_LONG_CALL=1 (npm run test:long). It cannot be instant — the point
-  // is to outlive credentials — but the local stack deliberately runs a 60s meeting token so
-  // ninety seconds is enough to cross both the join token and several capability lifetimes.
-  // Against a production-shaped 300s token this needs the full CALL_SECONDS below instead.
-  //
-  // A call of any real length is exactly the gap that let a two-minute expiry and a five-minute
-  // one both reach production: everything else in this file finishes in seconds.
-  const longCall = process.env["HELLAVE_TEST_LONG_CALL"] === "1" ? it : it.skip;
-  const CALL_SECONDS = Number(process.env["HELLAVE_TEST_CALL_SECONDS"] ?? 150);
-  longCall("outlives the credentials it was established with", { timeout: 600_000 }, async () => {
-    const host = await newPage("long-host");
-    await host.goto(ORIGIN);
-    await host.getByRole("button", { name: "Create a Room" }).click();
-    await host.getByPlaceholder("Your name").fill("long-host");
-    await host.getByRole("button", { name: /Create & Join|Creating/ }).click();
-    await host.getByTestId("room-instance-id").waitFor({ timeout: 60_000 });
-
-    const publish = host.getByRole("button", { name: "Publish Mic" });
-    await publish.waitFor({ timeout: 60_000 });
-    await publish.click();
-    await waitFor(
-      () => outboundAudio(host),
-      (t) => t.packetsSent > 0,
-      MEDIA_WAIT_MS,
-      "host never sent audio RTP",
-    );
-
-    // Past the join token's lifetime and several capability lifetimes, so a session that cannot
-    // reissue, or that is still bounded by the token it arrived with, has already failed.
-    await host.waitForTimeout(CALL_SECONDS * 1000);
-
-    // Audio alone proves nothing here: when the capability expires, the SFU refuses the
-    // renegotiation poll but media already flowing carries on regardless, so this test passed
-    // against the bug until it read the event log. What the expiry actually costs is the
-    // control attachment, which surfaces as a degraded state.
-    await host.getByTestId("debug-toggle").click();
-    await host.getByTestId("debug-drawer").waitFor({ timeout: 30_000 });
-    const events = await host.getByTestId("debug-drawer").innerText();
-    assert.ok(
-      !/degraded/i.test(events),
-      `the control attachment degraded during the call:\n${events}`,
-    );
-
-    const errors = host.consoleErrors.join(" | ");
-    assert.ok(
-      !/authentication_failed|Meeting Token expired|Media Capability/i.test(errors),
-      `call did not survive its credentials: ${errors}`,
-    );
-    const after = await outboundAudio(host);
-    assert.ok(after.packetsSent > 0, "audio stopped flowing");
   });
 
   // A publishing participant is the case that broke: leave took the room's media generation
