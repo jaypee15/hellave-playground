@@ -18,7 +18,7 @@
  */
 import { after, afterEach, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
 import { chromium } from "playwright";
@@ -28,6 +28,18 @@ const PORT = Number(process.env["AUDIO_PORT"] ?? 3098);
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 const MEDIA_WAIT_MS = Number(process.env["AUDIO_WAIT_MS"] ?? 30_000);
 const CASE_TIMEOUT = { timeout: 180_000 };
+
+/**
+ * The local stack's control script, when this run is pointed at a local stack.
+ *
+ * Restarting a service is only meaningful — and only permissible — against a stack this machine
+ * owns, so the restart case skips when HELLAVE_BASE_URL names anything else.
+ */
+const STACK_SCRIPT =
+  process.env["HELLAVE_STACK_SCRIPT"]
+  ?? new URL("../../Hellave/scripts/local-stack.sh", import.meta.url).pathname;
+const LOCAL_STACK =
+  /127\.0\.0\.1|localhost/.test(process.env["HELLAVE_BASE_URL"] ?? "") && existsSync(STACK_SCRIPT);
 
 let server;
 let browser;
@@ -864,6 +876,81 @@ describe("media through the SFU", () => {
       );
     },
   );
+
+  // FAILING, for a reason worth keeping visible: a signaling restart still destroys the room.
+  //
+  // It was written for the fatal trickled ICE candidate, which Hellave 7b37656 fixed — that alone
+  // ended every live call on every deploy, 108 of them in three minutes. With it gone this case
+  // gets further and then exposes a second, unrelated cause in a different subsystem:
+  //
+  //   disconnecting participant 2  reason="moderation_revoked"  ice_state=Connected
+  //   removed empty media room worker
+  //
+  // Reconnecting clients are refused with "signaling room is owned by another live generation"
+  // because the dead process's ownership lease is still held, while `retire_room_if_empty` asks an
+  // in-memory registry whether the room is empty — and a fresh process sees every live room as
+  // empty. So it issues DestroyRoom and the SFU kicks everyone. Signaling then retries against a
+  // room that no longer exists, which the SFU reports as 500 rather than 404, so it retries
+  // forever and the attachment stays degraded.
+  //
+  // Left failing rather than skipped: it is reporting a real bug that hit every deploy, and it
+  // goes green when that is fixed. A skipped test is one nobody remembers.
+  //
+  // Local stack only. Restarting a service is meaningful only against a stack this machine owns.
+  const localStackOnly = LOCAL_STACK ? it : it.skip;
+  localStackOnly("survives a signaling restart mid-call", { timeout: 300_000 }, async () => {
+    const host = await newPage("restart-host");
+    const guest = await newPage("restart-guest");
+
+    const roomInstanceId = await createRoom(host, "restart-host");
+    await joinRoom(guest, roomInstanceId, "restart-guest");
+
+    const publish = async (page) => {
+      const button = page.getByRole("button", { name: "Publish Mic" });
+      await button.waitFor({ timeout: 60_000 });
+      await button.click();
+    };
+    await publish(host);
+    await publish(guest);
+
+    const before = await waitFor(
+      () => inboundAudio(guest),
+      (t) => t.packetsReceived > 0,
+      MEDIA_WAIT_MS,
+      "the guest never received audio before the restart",
+    );
+
+    execFileSync("bash", [STACK_SCRIPT, "restart-signaling"], { stdio: "ignore" });
+
+    // A restart legitimately drops the control socket, so a transient degraded state is expected.
+    // What must not happen is the call ending: media keeps flowing and the attachment comes back.
+    const after = await waitFor(
+      () => inboundAudio(guest),
+      (t) => t.packetsReceived > before.packetsReceived,
+      60_000,
+      "audio stopped after signaling restarted",
+    );
+    assert.ok(after.packetsReceived > before.packetsReceived);
+
+    await waitFor(
+      () => guest.getByTestId("conference-state").innerText(),
+      (state) => /admitted/i.test(state),
+      60_000,
+      "the guest's attachment never came back after the restart",
+    );
+
+    // The precise regression. A stale candidate must be ignored, never answered with a conflict.
+    for (const [page, label] of [
+      [host, "host"],
+      [guest, "guest"],
+    ]) {
+      const errors = page.consoleErrors.join(" | ");
+      assert.ok(
+        !/unknown media transaction/i.test(errors),
+        `${label} was killed by a stale ICE candidate after the restart: ${errors}`,
+      );
+    }
+  });
 
   // Microphone only, deliberately: an audio-only capture is the case that used to be
   // rejected at stop with "recording contained no keyframe-safe media".
