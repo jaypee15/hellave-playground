@@ -26,14 +26,15 @@ let server;
 let browser;
 let shuttingDown = false;
 
-async function newPage(label, { grantMedia = true } = {}) {
+async function newPage(label, { grantMedia = true, viewport } = {}) {
   // grantMedia matters more than it looks. Chrome hides local addresses behind mDNS
   // `<uuid>.local` hostnames for any page that has not been granted camera or microphone
   // access, and granting it up front in every test is what hid a bug that broke every
   // first-time visitor on a fresh origin.
-  const context = await browser.newContext(
-    grantMedia ? { permissions: ["microphone", "camera"] } : {},
-  );
+  const context = await browser.newContext({
+    ...(grantMedia ? { permissions: ["microphone", "camera"] } : {}),
+    ...(viewport ? { viewport, isMobile: true, hasTouch: true } : {}),
+  });
   const page = await context.newPage();
   page.consoleErrors = [];
   page.on("console", (msg) => {
@@ -223,6 +224,51 @@ describe("playground interface", () => {
     });
     assert.ok(playing.found, "expected a video element for the local camera");
     assert.ok(playing.width > 0, `expected decoded frames, got ${JSON.stringify(playing)}`);
+  });
+
+  // Measured rather than eyeballed, because the failure is invisible on a desktop: the control bar
+  // came to 509px against a 390px viewport, which turned the whole document into a sideways
+  // scroller, and the side panel shared the row with the grid and squeezed it to zero width — the
+  // tiles still mounted and still playing, just not visible, so opening chat looked like the call
+  // had dropped.
+  it("fits a phone without scrolling sideways or losing the video", async () => {
+    const page = await newPage("mobile", { viewport: { width: 390, height: 664 } });
+    await page.goto(ORIGIN);
+    await page.getByRole("button", { name: "Create a Room" }).click();
+    await page.getByPlaceholder("Your name").fill("mobile");
+    await page.getByRole("button", { name: /Create & Join|Creating/ }).click();
+    await page.getByTestId("conference-state").getByText("admitted").waitFor({ timeout: 60_000 });
+
+    const box = () => page.evaluate(() => {
+      const root = document.documentElement;
+      const width = (selector) => {
+        const found = document.querySelector(selector);
+        return found ? Math.round(found.getBoundingClientRect().width) : null;
+      };
+      return {
+        viewport: root.clientWidth,
+        document: root.scrollWidth,
+        grid: width("[data-testid=video-grid]"),
+        bar: width("footer > div"),
+      };
+    });
+
+    const closed = await box();
+    assert.equal(
+      closed.document,
+      closed.viewport,
+      `the document is ${closed.document}px wide in a ${closed.viewport}px viewport`,
+    );
+    assert.ok(
+      closed.bar <= closed.viewport,
+      `the control bar is ${closed.bar}px and cannot fit ${closed.viewport}px`,
+    );
+
+    await page.getByTestId("chat-toggle").click();
+    await page.getByTestId("side-panel").waitFor();
+    const open = await box();
+    assert.equal(open.grid, closed.grid, "the video area must keep its width behind the panel");
+    assert.equal(open.document, open.viewport, "the panel must not widen the document");
   });
 
   // A refresh has to return the *same* peer and the *same* session. The server replaces an

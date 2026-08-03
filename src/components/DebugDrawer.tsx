@@ -37,9 +37,12 @@ export default function DebugDrawer({
         type="button"
         onClick={() => setOpen((value) => !value)}
         data-testid="debug-toggle"
-        className="rounded-lg bg-room-800 px-3 py-1.5 text-xs font-medium text-room-400 transition-colors hover:bg-room-700 hover:text-room-200"
+        aria-label={open ? "Hide diagnostics" : "Debug"}
+        title={open ? "Hide diagnostics" : "Debug"}
+        className="shrink-0 rounded-lg bg-room-800 px-2.5 py-1.5 text-xs font-medium text-room-400 transition-colors hover:bg-room-700 hover:text-room-200 sm:px-3"
       >
-        {open ? "Hide" : "Debug"}
+        <span aria-hidden="true" className="sm:hidden">{open ? "✕" : "🐞"}</span>
+        <span className="hidden sm:inline">{open ? "Hide" : "Debug"}</span>
       </button>
 
       {open && (

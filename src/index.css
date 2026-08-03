@@ -23,7 +23,19 @@
 html,
 body,
 #root {
+  /* dvh, not vh or 100%: a phone browser's chrome slides in and out and takes the viewport with
+     it, so a percentage height puts the control bar underneath the address bar exactly when
+     someone reaches for it. The percentage stays as the fallback for anything without dvh. */
   height: 100%;
+  height: 100dvh;
+}
+
+/* Nothing here is a horizontally scrolling document. Without this a single wide child — the
+   control bar was 509px against a 390px viewport — turns the whole page into a sideways
+   scroller, which is the most obvious way an interface reads as not built for a phone. */
+html,
+body {
+  overflow-x: hidden;
 }
 
 body {

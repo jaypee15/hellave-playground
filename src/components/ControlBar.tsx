@@ -70,7 +70,7 @@ function ControlButton({
       aria-label={label}
       title={label}
       data-testid={testId}
-      className={`relative flex h-11 w-11 items-center justify-center rounded-full text-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${tone}`}
+      className={`relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-base transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:h-11 sm:w-11 sm:text-lg ${tone}`}
     >
       <span aria-hidden="true">{icon}</span>
       {badge !== undefined && badge > 0 && (
@@ -86,7 +86,9 @@ export default function ControlBar(props: Props) {
   const [reactionsOpen, setReactionsOpen] = useState(false);
 
   return (
-    <div className="relative flex items-center justify-center gap-2 rounded-full bg-room-900/90 px-3 py-2 ring-1 ring-room-700 backdrop-blur">
+    // max-w-full and a tighter gap on small screens: eight controls at 44px plus a labelled
+    // Leave came to 509px, which no phone can show without scrolling sideways.
+    <div className="relative flex max-w-full items-center justify-center gap-1 rounded-full bg-room-900/90 px-2 py-2 ring-1 ring-room-700 backdrop-blur sm:gap-2 sm:px-3">
       {!props.publishing ? (
         <ControlButton
           label="Publish Mic"
@@ -188,17 +190,20 @@ export default function ControlBar(props: Props) {
         />
       )}
 
-      <div className="mx-1 h-7 w-px bg-room-700" />
+      <div className="mx-0.5 h-7 w-px shrink-0 bg-room-700 sm:mx-1" />
 
       <button
         type="button"
         onClick={props.onLeave}
         aria-label="Leave"
         title="Leave"
-        className="flex h-11 items-center gap-2 rounded-full bg-danger px-5 text-sm font-medium text-white transition-colors hover:bg-red-700"
+        className="flex h-10 shrink-0 items-center gap-2 rounded-full bg-danger px-3 text-sm font-medium text-white transition-colors hover:bg-red-700 sm:h-11 sm:px-5"
       >
         <span aria-hidden="true">📞</span>
-        Leave
+        {/* The word is worth keeping where it fits, but it is the widest thing in the bar. The
+            aria-label carries the name either way, so nothing is lost to a screen reader or to a
+            test addressing it by name. */}
+        <span className="hidden sm:inline">Leave</span>
       </button>
     </div>
   );

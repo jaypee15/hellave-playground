@@ -461,8 +461,11 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
 
   return (
     <div className="flex h-full flex-col bg-room-950">
-      <header className="flex shrink-0 flex-wrap items-center gap-3 px-4 py-3">
-        <span className="text-sm font-semibold tracking-tight">Hellave</span>
+      {/* min-w-0 on the row and on what truncates inside it, or a long room id forces the header
+          wider than the screen instead of shortening. Three wrapped rows took 89px of a 664px
+          phone viewport before this. */}
+      <header className="flex min-w-0 shrink-0 flex-wrap items-center gap-2 px-3 py-2 sm:gap-3 sm:px-4 sm:py-3">
+        <span className="hidden text-sm font-semibold tracking-tight sm:inline">Hellave</span>
 
         <span className="hidden text-xs text-room-400 sm:inline">{roomId}</span>
 
@@ -471,7 +474,7 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
             than a child for the same reason — nested text would land in that innerText. */}
         <code
           data-testid="room-instance-id"
-          className="max-w-[16rem] truncate rounded bg-room-850 px-2 py-1 font-mono text-[11px] text-room-400"
+          className="min-w-0 max-w-[5.5rem] truncate rounded bg-room-850 px-2 py-1 font-mono text-[11px] text-room-400 sm:max-w-[16rem]"
         >
           {roomInstanceId}
         </code>
@@ -505,7 +508,7 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
             className="flex items-center gap-1.5 rounded-full bg-danger/15 px-2.5 py-1 text-[11px] font-medium text-danger ring-1 ring-danger/40"
           >
             <span className="animate-recording-pulse h-2 w-2 rounded-full bg-danger" />
-            Recording
+            <span className="hidden sm:inline">Recording</span>
           </span>
         )}
 
@@ -515,9 +518,12 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
           type="button"
           onClick={() => setView((current) => (current === "grid" ? "speaker" : "grid"))}
           data-testid="view-toggle"
-          className="rounded-lg bg-room-800 px-3 py-1.5 text-xs font-medium text-room-400 transition-colors hover:bg-room-700 hover:text-room-200"
+          aria-label={view === "grid" ? "Speaker view" : "Grid view"}
+          title={view === "grid" ? "Speaker view" : "Grid view"}
+          className="shrink-0 rounded-lg bg-room-800 px-2.5 py-1.5 text-xs font-medium text-room-400 transition-colors hover:bg-room-700 hover:text-room-200 sm:px-3"
         >
-          {view === "grid" ? "Speaker view" : "Grid view"}
+          <span aria-hidden="true" className="sm:hidden">{view === "grid" ? "🗣" : "▦"}</span>
+          <span className="hidden sm:inline">{view === "grid" ? "Speaker view" : "Grid view"}</span>
         </button>
 
         <DebugDrawer
@@ -531,10 +537,12 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
       </header>
 
       {error && (
-        <p className="mx-4 mb-2 rounded-lg bg-danger/15 px-3 py-2 text-sm text-danger">{error}</p>
+        <p className="mx-3 mb-2 rounded-lg bg-danger/15 px-3 py-2 text-sm text-danger sm:mx-4">
+          {error}
+        </p>
       )}
 
-      <main className="relative flex min-h-0 flex-1 gap-3 px-4 pb-2">
+      <main className="relative flex min-h-0 flex-1 gap-3 px-3 pb-2 sm:px-4">
         <div className="relative min-w-0 flex-1">
           <VideoGrid participants={tiles} featuredId={spotlightOwner} view={view} />
           <ReactionOverlay reactions={floating} />

@@ -51,7 +51,11 @@ export default function SidePanel({
   return (
     <aside
       data-testid="side-panel"
-      className="flex w-full shrink-0 flex-col rounded-xl bg-room-900 ring-1 ring-room-700 md:w-80"
+      // Absolute on a phone, a column beside the grid from md up. Sharing the row on a narrow
+      // screen squeezed the video area to zero width — the tiles were still mounted and still
+      // playing, just not visible — so opening chat looked like the call had ended. Covering the
+      // grid instead is honest about there being room for one at a time.
+      className="absolute inset-0 z-20 flex flex-col rounded-xl bg-room-900 ring-1 ring-room-700 md:static md:z-auto md:w-80 md:shrink-0"
     >
       <div className="flex items-center gap-1 border-b border-room-700 p-2">
         {(["chat", "people"] as const).map((name) => (
