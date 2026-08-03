@@ -373,6 +373,11 @@ describe("audio through the SFU", () => {
 
     await host.getByTestId("recording-indicator").waitFor({ timeout: 60_000 });
 
+    // Record for long enough to be a recording. Stopping the instant the indicator appeared
+    // captured a single video frame, which is not something a real recording ever contains and
+    // which no encoder will turn into a video stream.
+    await host.waitForTimeout(3_000);
+
     await host.getByTestId("recording-toggle").click();
     await host
       .getByTestId("recording-indicator")

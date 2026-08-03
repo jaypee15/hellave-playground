@@ -358,7 +358,11 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
         await conference.startRecording();
       }
     } catch (err: unknown) {
-      addEvent(`Recording failed: ${err instanceof Error ? err.message : "Unknown"}`);
+      const message = err instanceof Error ? err.message : "Unknown";
+      addEvent(`Recording failed: ${message}`);
+      // Also to the console: the panel is invisible to the e2e tests, which turned a refused
+      // recording into an unexplained timeout waiting for an indicator that never appeared.
+      console.error(`Recording failed: ${message}`);
     } finally {
       setRecordingBusy(false);
     }
