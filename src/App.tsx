@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import { HellaveClient, type HellaveConfig } from "@hellave/js-sdk";
 import HomePage from "./components/HomePage.js";
 import ConferenceRoom from "./components/ConferenceRoom.js";
+import { invitedRoomInstanceId, showRoomInAddressBar } from "./invite.js";
 
 type Screen =
   | { name: "home" }
@@ -64,6 +65,7 @@ export default function App() {
       tokenProvider: tokenRefresher(roomInstanceId, displayName, peerId, "host"),
     };
     const client = new HellaveClient(config);
+    showRoomInAddressBar(roomInstanceId);
     setScreen({ name: "conference", client, roomId, roomInstanceId, peerId });
   }, []);
 
@@ -83,11 +85,26 @@ export default function App() {
       tokenProvider: tokenRefresher(roomInstanceId, displayName, peerId, "participant"),
     };
     const client = new HellaveClient(config);
+    showRoomInAddressBar(roomInstanceId);
     setScreen({ name: "conference", client, roomId, roomInstanceId, peerId });
   }, []);
 
+  // Read once, at startup: it seeds the join form, and leaving clears it so the home screen
+  // does not keep offering a room the person has just left.
+  const [invitedRoom] = useState(invitedRoomInstanceId);
+  const handleLeave = useCallback(() => {
+    showRoomInAddressBar(null);
+    setScreen({ name: "home" });
+  }, []);
+
   if (screen.name === "home") {
-    return <HomePage onCreated={handleCreated} onJoined={handleJoined} />;
+    return (
+      <HomePage
+        onCreated={handleCreated}
+        onJoined={handleJoined}
+        invitedRoomInstanceId={invitedRoom}
+      />
+    );
   }
 
   return (
@@ -96,7 +113,7 @@ export default function App() {
       roomId={screen.roomId}
       roomInstanceId={screen.roomInstanceId}
       peerId={screen.peerId}
-      onLeave={() => setScreen({ name: "home" })}
+      onLeave={handleLeave}
     />
   );
 }

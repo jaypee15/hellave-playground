@@ -214,4 +214,43 @@ describe("playground interface", () => {
     assert.ok(playing.found, "expected a video element for the local camera");
     assert.ok(playing.width > 0, `expected decoded frames, got ${JSON.stringify(playing)}`);
   });
+
+  // Rooms have no names, so the only way to invite somebody used to be reading a 36-character
+  // uuid off the header and retyping it. The link has to actually round-trip for that to change.
+  it("shares a room by link, and the link fills the join form in", async () => {
+    const host = await hostInRoom("invite-host");
+    const roomInstanceId = await host.getByTestId("room-instance-id").innerText();
+
+    // The address bar becomes the invite the moment the room exists, whether or not anyone
+    // presses the button.
+    const shared = new URL(host.url());
+    assert.equal(
+      shared.searchParams.get("room"),
+      roomInstanceId,
+      "the room should be in the address bar once the meeting screen is up",
+    );
+
+    // Copying is granted rather than stubbed, so this exercises the real clipboard path.
+    await host.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await host.getByTestId("copy-invite").click();
+    await host.getByTestId("copy-invite").getByText("Copied").waitFor({ timeout: 10_000 });
+    const copied = await host.evaluate(() => navigator.clipboard.readText());
+    assert.equal(new URL(copied).searchParams.get("room"), roomInstanceId);
+
+    // What the invited person sees: the join form, already knowing the room.
+    const guest = await newPage("invite-guest");
+    await guest.goto(copied);
+    await guest.getByText("You have been invited").waitFor({ timeout: 30_000 });
+    assert.equal(
+      await guest.getByTestId("join-room-instance-id").inputValue(),
+      roomInstanceId,
+      "the invited page should not ask for a room it was told about",
+    );
+
+    // And it is a working invite, not just a filled field.
+    await guest.getByPlaceholder("Your name").fill("invite-guest");
+    await guest.getByRole("button", { name: /^Join$|Joining/ }).click();
+    await guest.getByTestId("room-instance-id").waitFor({ timeout: 60_000 });
+    assert.equal(await guest.getByTestId("room-instance-id").innerText(), roomInstanceId);
+  });
 });

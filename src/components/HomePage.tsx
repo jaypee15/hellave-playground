@@ -3,6 +3,8 @@ import { useState, type FormEvent } from "react";
 interface Props {
   onCreated: (displayName: string, lobbyEnabled: boolean) => Promise<void>;
   onJoined: (roomInstanceId: string, displayName: string) => Promise<void>;
+  /** Room carried in by an invite link, if this page was opened with one. */
+  invitedRoomInstanceId?: string;
 }
 
 const INPUT_CLASS =
@@ -13,10 +15,18 @@ const PRIMARY_CLASS =
   "w-full rounded-lg bg-accent-strong px-4 py-2.5 text-sm font-medium text-white " +
   "transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50";
 
-export default function HomePage({ onCreated, onJoined }: Props) {
-  const [mode, setMode] = useState<"choose" | "create" | "join">("choose");
+export default function HomePage({
+  onCreated,
+  onJoined,
+  invitedRoomInstanceId = "",
+}: Props) {
+  // An invite already answers both "create or join" and "which room", so it opens on the join
+  // form with only a name left to give.
+  const [mode, setMode] = useState<"choose" | "create" | "join">(
+    invitedRoomInstanceId ? "join" : "choose",
+  );
   const [displayName, setDisplayName] = useState("");
-  const [roomInstanceId, setRoomInstanceId] = useState("");
+  const [roomInstanceId, setRoomInstanceId] = useState(invitedRoomInstanceId);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [lobbyEnabled, setLobbyEnabled] = useState(false);
@@ -100,13 +110,16 @@ export default function HomePage({ onCreated, onJoined }: Props) {
 
           {mode === "join" && (
             <form onSubmit={handleJoin} className="space-y-4">
-              <h2 className="text-sm font-medium text-white">Join a Room</h2>
+              <h2 className="text-sm font-medium text-white">
+                {invitedRoomInstanceId ? "You have been invited" : "Join a Room"}
+              </h2>
               <input
                 placeholder="Room Instance ID"
                 value={roomInstanceId}
                 onChange={(e) => setRoomInstanceId(e.target.value)}
                 required
-                autoFocus
+                autoFocus={!invitedRoomInstanceId}
+                data-testid="join-room-instance-id"
                 className={`${INPUT_CLASS} font-mono text-xs`}
               />
               <input
@@ -114,6 +127,7 @@ export default function HomePage({ onCreated, onJoined }: Props) {
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
                 required
+                autoFocus={Boolean(invitedRoomInstanceId)}
                 className={INPUT_CLASS}
               />
               <button type="submit" disabled={loading} className={PRIMARY_CLASS}>

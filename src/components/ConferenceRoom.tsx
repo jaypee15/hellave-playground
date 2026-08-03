@@ -11,6 +11,7 @@ import VideoGrid from "./VideoGrid.js";
 import type { TileParticipant } from "./VideoTile.js";
 import ControlBar from "./ControlBar.js";
 import SidePanel, { type ChatMessage } from "./SidePanel.js";
+import { inviteLink } from "../invite.js";
 import LobbyRequests from "./LobbyRequests.js";
 import ReactionOverlay, { type FloatingReaction } from "./ReactionOverlay.js";
 import DebugDrawer from "./DebugDrawer.js";
@@ -368,6 +369,25 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
     }
   };
 
+  const [inviteCopy, setInviteCopy] = useState("Copy invite");
+
+  /**
+   * Copy a link that opens this room, rather than the bare id.
+   *
+   * The id alone still has to be pasted into a form; the link is the whole invite. Failure is
+   * surfaced instead of swallowed — the clipboard API needs a secure context, and silently
+   * doing nothing looks identical to a broken button.
+   */
+  const handleCopyInvite = async () => {
+    try {
+      await navigator.clipboard.writeText(inviteLink(roomInstanceId));
+      setInviteCopy("Copied");
+    } catch {
+      setInviteCopy("Copy failed");
+    }
+    window.setTimeout(() => setInviteCopy("Copy invite"), 2_000);
+  };
+
   const handleLeave = () => {
     // Fire-and-forget on purpose — the person is leaving, so nothing is gained by making them
     // wait on the acknowledgement. But the rejection has to be handled: unhandled, a server
@@ -439,13 +459,24 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
         <span className="hidden text-xs text-room-400 sm:inline">{roomId}</span>
 
         {/* Read with innerText by the audio test, so it must not live inside the collapsed
-            debug drawer: hidden elements report no text. */}
+            debug drawer: hidden elements report no text. The copy button is a sibling rather
+            than a child for the same reason — nested text would land in that innerText. */}
         <code
           data-testid="room-instance-id"
           className="max-w-[16rem] truncate rounded bg-room-850 px-2 py-1 font-mono text-[11px] text-room-400"
         >
           {roomInstanceId}
         </code>
+
+        <button
+          type="button"
+          onClick={handleCopyInvite}
+          data-testid="copy-invite"
+          title="Copy a link that opens this room"
+          className="rounded bg-room-850 px-2 py-1 text-[11px] font-medium text-room-300 transition-colors hover:bg-room-700 hover:text-white"
+        >
+          {inviteCopy}
+        </button>
 
         <span data-testid="conference-state" className={`text-xs font-medium ${stateTone}`}>
           {state}
