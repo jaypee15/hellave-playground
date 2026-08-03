@@ -52,24 +52,32 @@ app.post("/api/create-room", async (req, res) => {
  *
  * A meeting token only authorises joining and is deliberately short-lived, so the SDK asks its
  * tokenProvider for a new one on every attach and on every reconnect. Handing back a captured
- * token instead — which this app used to do — means a reconnect presents an expired credential
- * and fails.
+ * token instead — which this app used to do — means a reconnect presents an expired credential.
  *
- * The peerId is supplied by the caller rather than derived: slugify() appends a fresh uuid, so
- * minting by display name would return a *different* peer and the room would see a stranger.
+ * Two pieces of identity have to survive a refresh, and getting either wrong looks like a
+ * different bug entirely:
+ *
+ * - **peerId**, because slugify() appends a fresh uuid, so minting by display name would return a
+ *   different peer and the room would see a stranger.
+ * - **sessionId**, because the server treats a token bearing the *same* session as a reconnect and
+ *   replaces the old attachment, while the same peer arriving on a *different* session is refused
+ *   outright with "peer_id is already connected in this room". Minting a new uuid per refresh
+ *   therefore broke every reconnect.
  */
 app.post("/api/token", async (req, res) => {
   try {
-    const { roomInstanceId, displayName, peerId } = req.body;
-    if (!roomInstanceId || !displayName || !peerId) {
-      res.status(400).json({ error: "roomInstanceId, displayName and peerId are required" });
+    const { roomInstanceId, displayName, peerId, sessionId } = req.body;
+    if (!roomInstanceId || !displayName || !peerId || !sessionId) {
+      res.status(400).json({
+        error: "roomInstanceId, displayName, peerId and sessionId are required",
+      });
       return;
     }
     const role = req.body["role"] ?? "participant";
     const isHost = role === "host";
-    const token = await api.issueMeetingToken(roomInstanceId, {
+    const mintToken = (lobby: boolean) => api.issueMeetingToken(roomInstanceId, {
       peerId,
-      sessionId: crypto.randomUUID(),
+      sessionId,
       profile: { displayName, avatarUrl: null },
       role,
       capabilities: {
@@ -83,10 +91,24 @@ app.post("/api/token", async (req, res) => {
         controlRecording: isHost,
         updateProfile: true,
       },
-      // Never the lobby on a refresh: this peer has already been admitted, and asking to be
-      // placed in the lobby again would send them back to waiting.
-      lobby: false,
+      lobby,
     });
+
+    // Only the caller knows whether this attach should wait for admission, and only the first one
+    // ever should — a reconnect is already past the lobby, and asking again would send the person
+    // back to waiting. The fallback mirrors /api/join-room: a room without a lobby refuses the
+    // request outright rather than ignoring the flag.
+    const wantsLobby = req.body["lobby"] === true;
+    let token;
+    try {
+      token = await mintToken(wantsLobby);
+    } catch (err: unknown) {
+      const refusedLobby = wantsLobby
+        && err instanceof Error
+        && /does not allow lobby/i.test(err.message);
+      if (!refusedLobby) throw err;
+      token = await mintToken(false);
+    }
     res.json({ token: token.token, expiresAt: token.expiresAt });
   } catch (err: unknown) {
     const status = err instanceof Error && "status" in err

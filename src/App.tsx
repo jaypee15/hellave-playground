@@ -27,12 +27,27 @@ function tokenRefresher(
   displayName: string,
   peerId: string,
   role: string,
+  wantsLobby: boolean,
 ): HellaveConfig["tokenProvider"] {
-  return async () => {
+  // One session for the whole conference, created here and reused by every mint. The server
+  // replaces an existing attachment when a token carries the *same* session, and refuses the same
+  // peer on a *different* one with "peer_id is already connected in this room" — so a fresh uuid
+  // per refresh turned every reconnect into a dead session.
+  const sessionId = crypto.randomUUID();
+  return async (context) => {
     const res = await fetch("/api/token", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ roomInstanceId, displayName, peerId, role }),
+      body: JSON.stringify({
+        roomInstanceId,
+        displayName,
+        peerId,
+        role,
+        sessionId,
+        // Only the first attach may wait for admission. A reconnect or a refresh is already past
+        // the lobby, and asking for it again would send the person back to waiting.
+        lobby: wantsLobby && context.reason === "attach",
+      }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -62,7 +77,8 @@ export default function App() {
     // authentication failure that looks nothing like a configuration mistake.
     const config: HellaveConfig = {
       controlUrl,
-      tokenProvider: tokenRefresher(roomInstanceId, displayName, peerId, "host"),
+      // A room's creator is its host and never waits in its lobby.
+      tokenProvider: tokenRefresher(roomInstanceId, displayName, peerId, "host", false),
     };
     const client = new HellaveClient(config);
     showRoomInAddressBar(roomInstanceId);
@@ -82,7 +98,7 @@ export default function App() {
     const { roomId, peerId, controlUrl } = await res.json();
     const config: HellaveConfig = {
       controlUrl,
-      tokenProvider: tokenRefresher(roomInstanceId, displayName, peerId, "participant"),
+      tokenProvider: tokenRefresher(roomInstanceId, displayName, peerId, "participant", true),
     };
     const client = new HellaveClient(config);
     showRoomInAddressBar(roomInstanceId);

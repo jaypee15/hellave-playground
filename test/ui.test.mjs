@@ -225,6 +225,51 @@ describe("playground interface", () => {
     assert.ok(playing.width > 0, `expected decoded frames, got ${JSON.stringify(playing)}`);
   });
 
+  // A refresh has to return the *same* peer and the *same* session. The server replaces an
+  // existing attachment when a token carries the same session, and refuses the same peer on a
+  // different one with "peer_id is already connected in this room" — so minting a fresh session
+  // per refresh killed every reconnect, which showed up as a call dying the moment a second
+  // device joined and the first one recovered.
+  it("keeps peer and session identity across a token refresh", async () => {
+    const created = await fetch(`${ORIGIN}/api/create-room`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ displayName: "refresh identity" }),
+    }).then((r) => r.json());
+    assert.ok(created.roomInstanceId, `create-room failed: ${JSON.stringify(created)}`);
+
+    const sessionId = crypto.randomUUID();
+    const mint = async () => {
+      const body = await fetch(`${ORIGIN}/api/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          roomInstanceId: created.roomInstanceId,
+          displayName: "refresh identity",
+          peerId: created.peerId,
+          role: "host",
+          sessionId,
+          lobby: false,
+        }),
+      }).then((r) => r.json());
+      assert.ok(body.token, `token mint failed: ${JSON.stringify(body)}`);
+      const payload = body.token.split(".")[1];
+      return JSON.parse(
+        Buffer.from(payload + "=".repeat(-payload.length % 4), "base64url").toString(),
+      );
+    };
+
+    const first = await mint();
+    const second = await mint();
+    assert.equal(second.peer_id, first.peer_id, "a refresh must not mint a different peer");
+    assert.equal(
+      second.session_id,
+      first.session_id,
+      "a refresh must not mint a different session, or the reconnect is refused",
+    );
+    assert.equal(first.peer_id, created.peerId);
+  });
+
   // The state every real visitor is in before they press publish, and the one every other case
   // here skips by granting permissions up front. Without a grant Chrome offers only mDNS
   // hostname candidates, which the SFU cannot resolve — it used to refuse them, and signaling
