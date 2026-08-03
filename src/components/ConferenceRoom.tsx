@@ -188,7 +188,15 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
         });
 
         conf.on("error", (err) => {
-          addEvent(`Error: ${err.code}`);
+          // The code alone is not diagnosable: the SDK and the server between them raise
+          // temporarily_unavailable from around thirty different places, and this panel was
+          // discarding the one field that distinguishes them. Context is included when present
+          // because it carries ids that tie the failure to a server-side log line.
+          const context = err.context && Object.keys(err.context).length > 0
+            ? ` ${JSON.stringify(err.context)}`
+            : "";
+          addEvent(`Error: ${err.code} — ${err.message}${context}`);
+          console.error(`Hellave error: ${err.code} — ${err.message}${context}`);
         });
       } catch (err: unknown) {
         if (!cancelled) {
