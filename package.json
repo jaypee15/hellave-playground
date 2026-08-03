@@ -15,7 +15,7 @@
     "test:long": "npm run build && HELLAVE_TEST_LONG_CALL=1 node --env-file-if-exists=.env --test --test-force-exit --test-reporter=spec test/audio.test.mjs"
   },
   "dependencies": {
-    "@hellave/js-sdk": "file:vendor/hellave-js-sdk-0.5.14.tgz",
+    "@hellave/js-sdk": "file:vendor/hellave-js-sdk-0.5.15.tgz",
     "express": "^4.21.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
