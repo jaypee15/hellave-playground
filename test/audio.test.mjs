@@ -572,6 +572,74 @@ describe("media through the SFU", () => {
     }
   });
 
+  // Everyone publishing at the same instant, which is what a real room does when a meeting starts.
+  //
+  // The SFU offers a renegotiation to every existing participant whenever anyone publishes, and each
+  // offer opens a window — signaling's poll, out over the socket, the browser's answer, back — in
+  // which that participant's own offer collides. Glare. It used to be refused outright with
+  // "cannot accept participant offer while an SFU-generated offer is pending", failing the publish,
+  // and the other cases here never caught it because each waits for one publisher to settle before
+  // starting the next.
+  //
+  // Probabilistic by nature: the collision depends on where the offers land relative to each other,
+  // so a green run does not prove the race cannot happen. The deterministic guarantee is the SFU's
+  // own a_participant_offer_supersedes_an_sfu_offer_awaiting_an_answer; this shows the symptom is
+  // gone from a real call.
+  //
+  // Measured after the glare fix: 13 of 15 local runs pass, against 1 of 2 pointed at a deployed SFU
+  // that still refused glare. So it still fails occasionally, with no glare rejection in the SFU log,
+  // no error from signaling and no participant left unconnected — "participant 1 never published"
+  // with nothing anywhere saying why. That residual cause is NOT diagnosed. This case is left in the
+  // suite because it is the only thing that reports it.
+  it("carries audio when everyone publishes at once", CASE_TIMEOUT, async () => {
+    const pages = [];
+    for (const label of ["race-first", "race-second", "race-third"]) {
+      pages.push(await newPage(label));
+    }
+    const [first, ...rest] = pages;
+
+    const roomInstanceId = await createRoom(first, "race-first");
+    for (const [index, page] of rest.entries()) {
+      await joinRoom(page, roomInstanceId, `race-${index + 2}`);
+    }
+
+    // Simultaneously, so the offers actually race rather than queueing behind one another.
+    await Promise.all(
+      pages.map(async (page) => {
+        const button = page.getByRole("button", { name: "Publish Mic" });
+        await button.waitFor({ timeout: 60_000 });
+        await button.click();
+      }),
+    );
+
+    // Every one must publish. A publish lost to glare shows up here as no outbound RTP at all.
+    for (const [index, page] of pages.entries()) {
+      const sent = await waitFor(
+        () => outboundAudio(page),
+        (t) => t.packetsSent > 0,
+        MEDIA_WAIT_MS,
+        `participant ${index + 1} never published after a simultaneous start`,
+      ).catch(async (error) => {
+        throw new Error(
+          `${error.message}\n  event log:\n${await appEvents(page)}` +
+            `\n  sockets: ${JSON.stringify(await socketReport(page))}`,
+        );
+      });
+      assert.ok(sent.packetsSent > 0);
+    }
+
+    // And each must hear the other two, which is what the renegotiations were for.
+    for (const [index, page] of pages.entries()) {
+      const received = await waitFor(
+        () => inboundAudio(page),
+        (t) => t.tracks >= 2 && t.packetsReceived > 0,
+        MEDIA_WAIT_MS,
+        `participant ${index + 1} did not receive both others after a simultaneous start`,
+      );
+      assert.ok(received.tracks >= 2, JSON.stringify(received));
+    }
+  });
+
   // Three, because two never caught this. A subscriber needs a fresh m-line for every remote
   // publication, so it has to be renegotiated once per publisher. With two participants a single
   // renegotiation covers everything and the suite was green while the earliest joiner in a real
