@@ -38,8 +38,20 @@ const CASE_TIMEOUT = { timeout: 180_000 };
 const STACK_SCRIPT =
   process.env["HELLAVE_STACK_SCRIPT"]
   ?? new URL("../../Hellave/scripts/local-stack.sh", import.meta.url).pathname;
-const LOCAL_STACK =
-  /127\.0\.0\.1|localhost/.test(process.env["HELLAVE_BASE_URL"] ?? "") && existsSync(STACK_SCRIPT);
+/**
+ * How to restart the signaling this run is pointed at.
+ *
+ * Overridable because the case only means anything against a deployment you can restart, and the one
+ * worth proving is the deployed one — that is where a restart used to end every live call. Set
+ * HELLAVE_RESTART_SIGNALING to a shell command for a remote stack, for example
+ * `ssh -i key user@host sudo systemctl restart hellave-signaling`. Falls back to the local stack's
+ * own subcommand when this run points at localhost, so the default needs no configuration.
+ */
+const RESTART_SIGNALING =
+  process.env["HELLAVE_RESTART_SIGNALING"]
+  ?? (/127\.0\.0\.1|localhost/.test(process.env["HELLAVE_BASE_URL"] ?? "") && existsSync(STACK_SCRIPT)
+    ? `bash ${STACK_SCRIPT} restart-signaling`
+    : "");
 
 let server;
 let browser;
@@ -957,9 +969,9 @@ describe("media through the SFU", () => {
   //
   // Nothing covered any of it, because no test had ever restarted anything.
   //
-  // Local stack only. Restarting a service is meaningful only against a stack this machine owns.
-  const localStackOnly = LOCAL_STACK ? it : it.skip;
-  localStackOnly("survives a signaling restart mid-call", { timeout: 300_000 }, async () => {
+  // Skipped unless this run knows how to restart the signaling it is pointed at.
+  const restartable = RESTART_SIGNALING ? it : it.skip;
+  restartable("survives a signaling restart mid-call", { timeout: 300_000 }, async () => {
     const host = await newPage("restart-host");
     const guest = await newPage("restart-guest");
 
@@ -981,7 +993,7 @@ describe("media through the SFU", () => {
       "the guest never received audio before the restart",
     );
 
-    execFileSync("bash", [STACK_SCRIPT, "restart-signaling"], { stdio: "ignore" });
+    execFileSync("bash", ["-c", RESTART_SIGNALING], { stdio: "ignore" });
 
     // A restart legitimately drops the control socket, so a transient degraded state is expected.
     // What must not happen is the call ending: media keeps flowing and the attachment comes back.
