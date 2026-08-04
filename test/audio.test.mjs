@@ -586,10 +586,12 @@ describe("media through the SFU", () => {
   // own a_participant_offer_supersedes_an_sfu_offer_awaiting_an_answer; this shows the symptom is
   // gone from a real call.
   //
-  // Measured against the local stack, twelve runs each, pass/fail taken from the runner's exit
-  // status: 7 of 12 with SDK 0.5.15, 12 of 12 with 0.5.16. The residual failures were the mirror of
-  // this bug — an Edge offer crossing the client's own, which the SDK terminated the attachment over
-  // (Hellave-SDKS 874cff4, and the timeout it needs in Hellave be7c301).
+  // Measured with pass/fail taken from the runner's exit status. Locally: 7 of 12 on SDK 0.5.15, 12 of
+  // 12 on 0.5.16. Against production, which has the server-side fixes: 2 of 6 on 0.5.16, 10 of 10 on
+  // 0.5.17. Three separate causes, all of them one transaction slot being asked to hold two
+  // negotiations — the SFU refusing a crossing offer (Hellave 5668c89), the client terminating over
+  // one (Hellave-SDKS 874cff4 with the timeout it needs in Hellave be7c301), and the client
+  // pipelining two of its own (Hellave-SDKS a63eb83).
   it("carries audio when everyone publishes at once", CASE_TIMEOUT, async () => {
     const pages = [];
     for (const label of ["race-first", "race-second", "race-third"]) {
