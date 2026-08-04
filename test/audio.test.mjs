@@ -946,24 +946,16 @@ describe("media through the SFU", () => {
     },
   );
 
-  // FAILING, for a reason worth keeping visible: a signaling restart still destroys the room.
+  // Every deploy restarts signaling, and every deploy used to end every call that was live at the
+  // time. Two separate causes, both now fixed:
   //
-  // It was written for the fatal trickled ICE candidate, which Hellave 7b37656 fixed — that alone
-  // ended every live call on every deploy, 108 of them in three minutes. With it gone this case
-  // gets further and then exposes a second, unrelated cause in a different subsystem:
+  //   - a trickled ICE candidate whose transaction the restart forgot was answered with a fatal
+  //     conflict, 108 of them in three minutes (Hellave 7b37656)
+  //   - establish_control_generation then disconnected every participant outright, because signaling
+  //     loses the participant mapping on restart and nobody could address the survivors. The node now
+  //     hands them to the incoming generation instead (Hellave 96da7df)
   //
-  //   disconnecting participant 2  reason="moderation_revoked"  ice_state=Connected
-  //   removed empty media room worker
-  //
-  // Reconnecting clients are refused with "signaling room is owned by another live generation"
-  // because the dead process's ownership lease is still held, while `retire_room_if_empty` asks an
-  // in-memory registry whether the room is empty — and a fresh process sees every live room as
-  // empty. So it issues DestroyRoom and the SFU kicks everyone. Signaling then retries against a
-  // room that no longer exists, which the SFU reports as 500 rather than 404, so it retries
-  // forever and the attachment stays degraded.
-  //
-  // Left failing rather than skipped: it is reporting a real bug that hit every deploy, and it
-  // goes green when that is fixed. A skipped test is one nobody remembers.
+  // Nothing covered any of it, because no test had ever restarted anything.
   //
   // Local stack only. Restarting a service is meaningful only against a stack this machine owns.
   const localStackOnly = LOCAL_STACK ? it : it.skip;
