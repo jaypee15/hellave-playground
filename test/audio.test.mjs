@@ -489,20 +489,8 @@ describe("media through the SFU", () => {
     const host = await newPage("listen-host");
     const listener = await newPage("listener");
 
-    await host.goto(ORIGIN);
-    await host.getByRole("button", { name: "Create a Room" }).click();
-    await host.getByPlaceholder("Your name").fill("listen-host");
-    await host.getByRole("button", { name: /Create & Join|Creating/ }).click();
-    const roomInstanceId = await host
-      .getByTestId("room-instance-id")
-      .innerText({ timeout: 60_000 });
-
-    await listener.goto(ORIGIN);
-    await listener.getByRole("button", { name: "Join a Room" }).click();
-    await listener.getByPlaceholder("Room Instance ID").fill(roomInstanceId);
-    await listener.getByPlaceholder("Your name").fill("listener");
-    await listener.getByRole("button", { name: /^Join$|Joining/ }).click();
-    await listener.getByTestId("room-instance-id").waitFor({ timeout: 60_000 });
+    const roomInstanceId = await createRoom(host, "listen-host");
+    await joinRoom(listener, roomInstanceId, "listener");
 
     // Only the host publishes. The listener never touches a capture control.
     const publish = host.getByRole("button", { name: "Publish Mic" });
@@ -529,23 +517,11 @@ describe("media through the SFU", () => {
     const guest = await newPage("guest");
 
     // Host creates the room.
-    await host.goto(ORIGIN);
-    await host.getByRole("button", { name: "Create a Room" }).click();
-    await host.getByPlaceholder("Your name").fill("audio-host");
-    await host.getByRole("button", { name: /Create & Join|Creating/ }).click();
-
-    const roomInstanceId = await host
-      .getByTestId("room-instance-id")
-      .innerText({ timeout: 60_000 });
+    const roomInstanceId = await createRoom(host, "audio-host");
     assert.match(roomInstanceId, /^[0-9a-f-]{36}$/, "expected a room instance UUID in the UI");
 
     // Guest joins the same room instance.
-    await guest.goto(ORIGIN);
-    await guest.getByRole("button", { name: "Join a Room" }).click();
-    await guest.getByPlaceholder("Room Instance ID").fill(roomInstanceId);
-    await guest.getByPlaceholder("Your name").fill("audio-guest");
-    await guest.getByRole("button", { name: /^Join$|Joining/ }).click();
-    await guest.getByTestId("room-instance-id").waitFor({ timeout: 60_000 });
+    await joinRoom(guest, roomInstanceId, "audio-guest");
 
     // Both publish. A participant only gets an SFU session when it publishes something —
     // push_pending_media_offer needs its own publication_id — so a listen-only guest never
@@ -700,22 +676,8 @@ describe("media through the SFU", () => {
     const second = await newPage("second");
     const third = await newPage("third");
 
-    await first.goto(ORIGIN);
-    await first.getByRole("button", { name: "Create a Room" }).click();
-    await first.getByPlaceholder("Your name").fill("three-first");
-    await first.getByRole("button", { name: /Create & Join|Creating/ }).click();
-    const roomInstanceId = await first
-      .getByTestId("room-instance-id")
-      .innerText({ timeout: 60_000 });
-
-    const join = async (page, name) => {
-      await page.goto(ORIGIN);
-      await page.getByRole("button", { name: "Join a Room" }).click();
-      await page.getByPlaceholder("Room Instance ID").fill(roomInstanceId);
-      await page.getByPlaceholder("Your name").fill(name);
-      await page.getByRole("button", { name: /^Join$|Joining/ }).click();
-      await page.getByTestId("room-instance-id").waitFor({ timeout: 60_000 });
-    };
+    const roomInstanceId = await createRoom(first, "three-first");
+    const join = (page, name) => joinRoom(page, roomInstanceId, name);
     const publish = async (page) => {
       const button = page.getByRole("button", { name: "Publish Mic" });
       await button.waitFor({ timeout: 60_000 });
@@ -906,22 +868,8 @@ describe("media through the SFU", () => {
       const second = await newPage("expiry-second");
       const third = await newPage("expiry-third");
 
-      await first.goto(ORIGIN);
-      await first.getByRole("button", { name: "Create a Room" }).click();
-      await first.getByPlaceholder("Your name").fill("expiry-first");
-      await first.getByRole("button", { name: /Create & Join|Creating/ }).click();
-      const roomInstanceId = await first
-        .getByTestId("room-instance-id")
-        .innerText({ timeout: 60_000 });
-
-      const join = async (page, name) => {
-        await page.goto(ORIGIN);
-        await page.getByRole("button", { name: "Join a Room" }).click();
-        await page.getByPlaceholder("Room Instance ID").fill(roomInstanceId);
-        await page.getByPlaceholder("Your name").fill(name);
-        await page.getByRole("button", { name: /^Join$|Joining/ }).click();
-        await page.getByTestId("room-instance-id").waitFor({ timeout: 60_000 });
-      };
+      const roomInstanceId = await createRoom(first, "expiry-first");
+      const join = (page, name) => joinRoom(page, roomInstanceId, name);
       const publish = async (page) => {
         const button = page.getByRole("button", { name: "Publish Mic" });
         await button.waitFor({ timeout: 60_000 });
@@ -1065,11 +1013,7 @@ describe("media through the SFU", () => {
     // Lives here rather than in the lifecycle suite because the recording service attaches an
     // egress to the room on its SFU, and that room only exists once someone has published.
     const host = await newPage("record-host");
-    await host.goto(ORIGIN);
-    await host.getByRole("button", { name: "Create a Room" }).click();
-    await host.getByPlaceholder("Your name").fill("record-host");
-    await host.getByRole("button", { name: /Create & Join|Creating/ }).click();
-    await host.getByTestId("room-instance-id").waitFor({ timeout: 60_000 });
+    await createRoom(host, "record-host");
 
     const publish = host.getByRole("button", { name: "Publish Mic" });
     await publish.waitFor({ timeout: 60_000 });
@@ -1110,11 +1054,7 @@ describe("media through the SFU", () => {
   // case here ends by closing the browser rather than by leaving.
   it("acknowledges a leave from a participant that is publishing", CASE_TIMEOUT, async () => {
     const host = await newPage("leave-host");
-    await host.goto(ORIGIN);
-    await host.getByRole("button", { name: "Create a Room" }).click();
-    await host.getByPlaceholder("Your name").fill("leave-host");
-    await host.getByRole("button", { name: /Create & Join|Creating/ }).click();
-    await host.getByTestId("room-instance-id").waitFor({ timeout: 60_000 });
+    await createRoom(host, "leave-host");
 
     const publish = host.getByRole("button", { name: "Publish Mic" });
     await publish.waitFor({ timeout: 60_000 });
