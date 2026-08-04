@@ -8,6 +8,8 @@
     "dev": "vite",
     "build": "tsc && tsc -p server --noEmit && vite build",
     "test:server": "node --test --test-force-exit --test-reporter=spec test/server-retry.test.mjs",
+    "test:meeting": "npm run build && node --env-file=.env.local --test --test-force-exit --test-reporter=spec test/meeting.test.mjs",
+    "test:meeting:prod": "npm run build && node --env-file-if-exists=.env --test --test-force-exit --test-reporter=spec test/meeting.test.mjs",
     "start": "tsx --env-file-if-exists=.env server/index.ts",
     "test:e2e": "node --env-file-if-exists=.env --test --test-force-exit --test-reporter=spec test/lifecycle.test.mjs",
     "test:audio": "npm run build && node --env-file-if-exists=.env --test --test-force-exit --test-reporter=spec test/audio.test.mjs",

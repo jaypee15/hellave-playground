@@ -81,6 +81,12 @@ export default function VideoTile({ participant, prominent = false }: Props) {
   useEffect(() => {
     if (videoLive && videoRef.current && participant.videoStream) {
       videoRef.current.srcObject = participant.videoStream;
+      // Played explicitly rather than left to the autoplay attribute. The element mounts before
+      // this effect runs, so its one automatic attempt happens while it still has no source, and
+      // the algorithm does not retry when one arrives — which left a tile black, with the track
+      // live and frames arriving, until something else happened to call play(). It showed up as a
+      // screen share that worked for the person sharing and appeared blank to everyone else.
+      void videoRef.current.play().catch(() => {});
     }
   }, [videoLive, participant.videoStream]);
 

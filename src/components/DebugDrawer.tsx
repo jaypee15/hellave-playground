@@ -7,6 +7,15 @@ interface Props {
   peerId: string;
   spotlight: string | null;
   raisedHands: readonly string[];
+  /**
+   * Video this participant is actually receiving, as `source:publicationId`.
+   *
+   * Worth surfacing because the SFU bounds how much video any one subscriber receives, so in a
+   * busy room "why can I not see them" is usually answered by what is missing from this list —
+   * and that is invisible from the grid, which looks the same whether a publication was never
+   * sent or merely never rendered.
+   */
+  receivedVideo: readonly string[];
 }
 
 /**
@@ -23,6 +32,7 @@ export default function DebugDrawer({
   peerId,
   spotlight,
   raisedHands,
+  receivedVideo,
 }: Props) {
   const [open, setOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -64,6 +74,10 @@ export default function DebugDrawer({
             <dt>hands</dt>
             <dd data-testid="raised-hands" className="truncate text-room-200">
               {raisedHands.length > 0 ? raisedHands.join(", ") : "none"}
+            </dd>
+            <dt>video in</dt>
+            <dd data-testid="received-video" className="break-all text-room-200">
+              {receivedVideo.length > 0 ? receivedVideo.join(" ") : "none"}
             </dd>
           </dl>
 

@@ -41,7 +41,26 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
   const [publishing, setPublishing] = useState(false);
   const [muted, setMuted] = useState(false);
   const [remoteAudio, setRemoteAudio] = useState<Array<{ participantId: string; stream: MediaStream }>>([]);
-  const [remoteVideo, setRemoteVideo] = useState<Array<{ participantId: string; stream: MediaStream }>>([]);
+  /**
+   * Received video, keyed by publication rather than by participant.
+   *
+   * Keyed by participant, a second video from the same person replaced the first: a screen share
+   * evicted the camera it was published alongside, so one of the two was dropped before anything
+   * was rendered. Whoever shared their screen looked to everyone else like they had simply changed
+   * what their camera was pointing at.
+   */
+  const [remoteVideo, setRemoteVideo] = useState<
+    Array<{ publicationId: string; participantId: string; stream: MediaStream }>
+  >([]);
+  /**
+   * What each publication is, from the snapshot, because the received track does not say.
+   *
+   * `RemoteVideoTrack` carries `publicationId` and `ownerParticipantId` but no source, so a camera
+   * and a screen share are indistinguishable until they are joined against the roster.
+   */
+  const [publicationSources, setPublicationSources] = useState<ReadonlyMap<string, string>>(
+    new Map(),
+  );
   const [localVideo, setLocalVideo] = useState<MediaStream | null>(null);
   const [error, setError] = useState("");
   const [mediaPath, setMediaPath] = useState("");
@@ -106,6 +125,7 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
       mutedAudio: p.muted.audio,
     })));
     setLobby(snap.lobby);
+    setPublicationSources(new Map(snap.publications.map((pub) => [pub.id, pub.source])));
     setSpotlight(snap.spotlightPublicationId);
     // The snapshot spotlights a publication, but the grid features a participant.
     setSpotlightOwner(
@@ -158,10 +178,21 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
         conf.on("remoteVideoTrack", (remote) => {
           const stream = new MediaStream([remote.mediaStreamTrack]);
           setRemoteVideo((prev) => [
-            ...prev.filter((t) => t.participantId !== remote.ownerParticipantId),
-            { participantId: remote.ownerParticipantId, stream },
+            ...prev.filter((t) => t.publicationId !== remote.publicationId),
+            {
+              publicationId: remote.publicationId,
+              participantId: remote.ownerParticipantId,
+              stream,
+            },
           ]);
-          addEvent(`Remote video track from ${remote.ownerParticipantId}`);
+          // The Public Edge sends no message when a remote publication stops, so without this a
+          // stopped camera or a finished screen share keeps its tile and its last decoded frame
+          // for the rest of the meeting. Only `ended` clears it: a track also goes `mute` when
+          // forwarding is merely paused, and that one comes back.
+          remote.mediaStreamTrack.addEventListener("ended", () => {
+            setRemoteVideo((prev) => prev.filter((t) => t.publicationId !== remote.publicationId));
+          });
+          addEvent(`Remote video ${remote.publicationId} from ${remote.ownerParticipantId}`);
         });
 
         conf.on("roomMessage", (message) => {
@@ -415,15 +446,31 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
     });
   };
 
+  const isScreen = useCallback(
+    (publicationId: string) => publicationSources.get(publicationId) === "screen",
+    [publicationSources],
+  );
+
+  /** Received video as `source:publicationId`, for the header diagnostic and the debug drawer. */
+  const receivedVideoIds = useMemo(
+    () => remoteVideo.map(
+      (track) => `${publicationSources.get(track.publicationId) ?? "unknown"}:${track.publicationId}`,
+    ),
+    [remoteVideo, publicationSources],
+  );
+
   const tiles = useMemo<TileParticipant[]>(() => {
     const known = participants.map((participant) => ({
       id: participant.id,
       displayName: participant.displayName,
       role: participant.role,
       audioStream: remoteAudio.find((t) => t.participantId === participant.id)?.stream,
+      // A person's own tile carries their camera. Their screen share, if any, is a tile of its
+      // own below — putting it here would mean choosing between the two.
       videoStream: participant.id === peerId
         ? localVideo ?? undefined
-        : remoteVideo.find((t) => t.participantId === participant.id)?.stream,
+        : remoteVideo.find((t) => t.participantId === participant.id && !isScreen(t.publicationId))
+          ?.stream,
       handRaised: raisedHands.has(participant.id),
       muted: participant.id === peerId ? muted : participant.mutedAudio,
       isLocal: participant.id === peerId,
@@ -441,17 +488,47 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
         isLocal: true,
       }];
     }
-    return known;
-  }, [participants, remoteAudio, remoteVideo, localVideo, raisedHands, muted, peerId, handRaised]);
+    // One tile per received screen share, named for whoever is sharing. A screen share is a second
+    // video publication from a participant who usually still has a camera, so it is a thing in the
+    // room in its own right rather than a different picture of that person.
+    const shares = remoteVideo
+      .filter((track) => isScreen(track.publicationId))
+      .map((track) => ({
+        id: `screen-${track.publicationId}`,
+        displayName: `${
+          participants.find((p) => p.id === track.participantId)?.displayName ?? track.participantId
+        }'s screen`,
+        role: "screen",
+        videoStream: track.stream,
+        handRaised: false,
+        muted: false,
+        isLocal: false,
+      }));
+    return [...known, ...shares];
+  }, [
+    participants,
+    remoteAudio,
+    remoteVideo,
+    localVideo,
+    raisedHands,
+    muted,
+    peerId,
+    handRaised,
+    isScreen,
+  ]);
 
+  // From the roster, not from the tiles: a screen share is a tile but not a person, and the People
+  // panel is a list of people.
   const panelParticipants = useMemo(
-    () => tiles.map((tile) => ({
-      id: tile.id,
-      displayName: tile.displayName,
-      role: tile.role,
-      handRaised: tile.handRaised,
-      isLocal: tile.isLocal,
-    })),
+    () => tiles
+      .filter((tile) => tile.role !== "screen")
+      .map((tile) => ({
+        id: tile.id,
+        displayName: tile.displayName,
+        role: tile.role,
+        handRaised: tile.handRaised,
+        isLocal: tile.isLocal,
+      })),
     [tiles],
   );
 
@@ -491,6 +568,16 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
 
         <span data-testid="conference-state" className={`text-xs font-medium ${stateTone}`}>
           {state}
+        </span>
+
+        {/*
+          Always mounted and visually hidden, unlike the same list in the debug drawer: the drawer
+          is an overlay that sits over the control bar, so a test that had to open it to read this
+          could no longer click Stop camera. Read with textContent, which does not need the element
+          to be visible.
+        */}
+        <span data-testid="received-video" className="sr-only">
+          {receivedVideoIds.length > 0 ? receivedVideoIds.join(" ") : "none"}
         </span>
 
         {mediaPath && (
@@ -533,6 +620,7 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
           peerId={peerId}
           spotlight={spotlight}
           raisedHands={[...raisedHands]}
+          receivedVideo={receivedVideoIds}
         />
       </header>
 

@@ -253,6 +253,58 @@ export async function appEvents(page) {
 }
 
 /**
+ * What video this page is receiving, as `source:publicationId` entries.
+ *
+ * The measurement that separates "the SFU never sent it" from "the app never rendered it". Read
+ * with textContent because the element is visually hidden: it is a diagnostic, and the alternative
+ * — the same list inside the debug drawer — is an overlay that would cover the control bar.
+ */
+export async function receivedVideo(page) {
+  const text = await page
+    .getByTestId("received-video")
+    .evaluate((element) => element.textContent ?? "")
+    .catch(() => "");
+  const trimmed = text.trim();
+  return trimmed === "" || trimmed === "none" ? [] : trimmed.split(/\s+/);
+}
+
+/**
+ * Video this page is decoding *right now*, measured as a delta.
+ *
+ * Every other count is misleading here. Inbound-rtp reports accumulate across renegotiations, so
+ * spent m-lines keep reporting themselves with no packets; `framesDecoded` is cumulative, so a track
+ * that carried video minutes ago still looks busy; and the app's own list holds a publication until
+ * its track fires `ended`, which a merely unsubscribed track never does. Two samples a moment apart
+ * answer the only question worth asking: how many videos is this person actually watching.
+ */
+export async function decodingVideo(page, sampleMs = 1500) {
+  const sample = () => page.evaluate(async () => {
+    const frames = {};
+    for (const pc of window.__hellavePCs ?? []) {
+      const stats = await pc.getStats();
+      stats.forEach((report) => {
+        if (report.type !== "inbound-rtp" || report.kind !== "video") return;
+        frames[report.trackIdentifier ?? report.id] = report.framesDecoded ?? 0;
+      });
+    }
+    return frames;
+  });
+
+  const before = await sample();
+  await new Promise((resolve) => setTimeout(resolve, sampleMs));
+  const after = await sample();
+  const advancing = Object.keys(after).filter((id) => (after[id] ?? 0) > (before[id] ?? 0));
+  return { tracks: advancing.length, ids: advancing };
+}
+
+/** Publication ids of the screen shares this page is receiving. */
+export async function receivedScreens(page) {
+  return (await receivedVideo(page))
+    .filter((entry) => entry.startsWith("screen:"))
+    .map((entry) => entry.slice("screen:".length));
+}
+
+/**
  * Wait to be in the room, or fail with the reason the home screen gave.
  *
  * The home screen already displays why creating or joining failed, but a test that waits only for
@@ -425,6 +477,47 @@ export function createHarness({ port, mediaWaitMs = 30_000, browserArgs = [] } =
         throw new Error(
           `${error.message}\n${label} control sockets: ${sockets}\n${label} event log:\n${await appEvents(page)}`,
         );
+      }
+    },
+
+    /** Publish the microphone and wait until it is actually sending. */
+    async publishMic(page, label) {
+      const publish = page.getByRole("button", { name: "Publish Mic" });
+      await publish.waitFor({ timeout: 60_000 });
+      await publish.click();
+      try {
+        await waitFor(
+          () => outboundAudio(page),
+          (t) => t.packetsSent > 0,
+          mediaWaitMs,
+          `${label} never sent microphone RTP`,
+        );
+      } catch (error) {
+        throw new Error(`${error.message}\n${label} event log:\n${await appEvents(page)}`);
+      }
+    },
+
+    /**
+     * Share the screen and wait until a second video stream is actually going out.
+     *
+     * Measured as one more outbound video track than before rather than by reading the app's own
+     * report: getDisplayMedia can be refused, and a refusal is reported into the event log rather
+     * than thrown, so "the button was clicked" says nothing about whether anything is being sent.
+     */
+    async shareScreen(page, label) {
+      const before = await outboundVideo(page);
+      const toggle = page.getByTestId("screen-toggle");
+      await toggle.waitFor({ timeout: 60_000 });
+      await toggle.click();
+      try {
+        return await waitFor(
+          () => outboundVideo(page),
+          (t) => t.tracks > before.tracks && t.packetsSent > before.packetsSent,
+          mediaWaitMs,
+          `${label} never sent screen RTP`,
+        );
+      } catch (error) {
+        throw new Error(`${error.message}\n${label} event log:\n${await appEvents(page)}`);
       }
     },
 
