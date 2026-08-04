@@ -10,69 +10,22 @@
  *
  * Requires a build (`npm run build`) — the express server serves dist/ and /api on one origin.
  */
-import { after, before, describe, it } from "node:test";
+import { after, afterEach, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { once } from "node:events";
-import { existsSync } from "node:fs";
-import { chromium } from "playwright";
+import { createHarness, reachRoom } from "./harness.mjs";
 
-const API_KEY = process.env["HELLAVE_API_KEY"];
 const PORT = Number(process.env["UI_PORT"] ?? 3097);
-const ORIGIN = `http://127.0.0.1:${PORT}`;
 const CASE_TIMEOUT = { timeout: 120_000 };
 
-let server;
-let browser;
-let shuttingDown = false;
-
-async function newPage(label, { grantMedia = true, viewport } = {}) {
-  // grantMedia matters more than it looks. Chrome hides local addresses behind mDNS
-  // `<uuid>.local` hostnames for any page that has not been granted camera or microphone
-  // access, and granting it up front in every test is what hid a bug that broke every
-  // first-time visitor on a fresh origin.
-  const context = await browser.newContext({
-    ...(grantMedia ? { permissions: ["microphone", "camera"] } : {}),
-    ...(viewport ? { viewport, isMobile: true, hasTouch: true } : {}),
-  });
-  const page = await context.newPage();
-  page.consoleErrors = [];
-  page.on("console", (msg) => {
-    if (msg.type() === "error") {
-      page.consoleErrors.push(msg.text());
-      process.stderr.write(`[${label}] ${msg.text()}\n`);
-    }
-  });
-  return page;
-}
-
-/**
- * Wait to be in the room, or fail with the reason the home screen gave.
- *
- * Waiting only for the room id throws away a message the app is already displaying: a named
- * failure turns into `Timeout 60000ms exceeded`, which names neither the cause nor the side it
- * came from. The room id keeps the only deadline, so a screen showing neither still fails as it
- * did before instead of hanging until the case times out.
- */
-async function reachRoom(page, what) {
-  const failure = page.getByTestId("home-error");
-  const reported = await Promise.race([
-    page.getByTestId("room-instance-id").waitFor({ timeout: 60_000 }).then(() => null),
-    // The losing branch resolves to a promise that never settles rather than rejecting: once the
-    // room has arrived, this locator timing out afterwards means nothing.
-    failure.waitFor({ timeout: 60_000 }).then(() => failure.innerText(), () => new Promise(() => {})),
-  ]);
-  if (reported) throw new Error(`${what}: ${reported}`);
-}
+const harness = createHarness({ port: PORT });
+const ORIGIN = harness.origin;
+const newPage = (...args) => harness.newPage(...args);
 
 /** Create a room through the UI and land in the meeting screen. */
 async function hostInRoom(name = "ui-host") {
   const page = await newPage(name);
-  await page.goto(ORIGIN);
-  await page.getByRole("button", { name: "Create a Room" }).click();
-  await page.getByPlaceholder("Your name").fill(name);
-  await page.getByRole("button", { name: /Create & Join|Creating/ }).click();
-  await reachRoom(page, `${name} could not create a room`);
+  const created = await harness.createRoom(page, name);
+  assert.ok(created, `${name} never reached a room`);
   // The room id renders as soon as attach resolves, but chat, hands and reactions are only
   // accepted from an admitted attachment — and the controls are disabled until then.
   await page.getByTestId("conference-state").getByText("admitted").waitFor({ timeout: 60_000 });
@@ -80,54 +33,13 @@ async function hostInRoom(name = "ui-host") {
 }
 
 describe("playground interface", () => {
-  before(async () => {
-    assert.ok(API_KEY, "HELLAVE_API_KEY must be set");
-    assert.ok(
-      existsSync(new URL("../dist/index.html", import.meta.url)),
-      "dist/ is missing — run `npm run build` first",
-    );
+  before(() => harness.start());
 
-    server = spawn("npx", ["tsx", "server/index.ts"], {
-      env: { ...process.env, PORT: String(PORT) },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stderr = "";
-    server.stderr.on("data", (chunk) => { stderr += chunk; });
-    server.once("exit", (code, signal) => {
-      if (shuttingDown || code === 0 || code === null || code === 143 || signal) return;
-      throw new Error(`playground server exited with ${code}: ${stderr}`);
-    });
+  // Contexts are closed per case here too, so a room from one case is not still live during the
+  // next — the media suite learned that the hard way.
+  afterEach(() => harness.closeOpenContexts());
 
-    const deadline = Date.now() + 30_000;
-    while (Date.now() < deadline) {
-      try {
-        await fetch(`${ORIGIN}/`);
-        break;
-      } catch {
-        await new Promise((resolve) => setTimeout(resolve, 250));
-      }
-    }
-
-    browser = await chromium.launch({
-      args: [
-        "--use-fake-device-for-media-stream",
-        "--use-fake-ui-for-media-stream",
-        "--autoplay-policy=no-user-gesture-required",
-      ],
-    });
-  });
-
-  after(async () => {
-    if (browser) await browser.close().catch(() => {});
-    if (server && server.exitCode === null) {
-      shuttingDown = true;
-      server.kill("SIGTERM");
-      await Promise.race([
-        once(server, "exit").catch(() => {}),
-        new Promise((resolve) => setTimeout(resolve, 5_000)),
-      ]);
-    }
-  });
+  after(() => harness.stop());
 
   it("offers the home screen's two entry points", CASE_TIMEOUT, async () => {
     const page = await newPage("home");
