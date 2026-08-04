@@ -6,7 +6,8 @@
   "scripts": {
     "dev:server": "tsx --env-file-if-exists=.env server/index.ts",
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "tsc && tsc -p server --noEmit && vite build",
+    "test:server": "node --test --test-force-exit --test-reporter=spec test/server-retry.test.mjs",
     "start": "tsx --env-file-if-exists=.env server/index.ts",
     "test:e2e": "node --env-file-if-exists=.env --test --test-force-exit --test-reporter=spec test/lifecycle.test.mjs",
     "test:audio": "npm run build && node --env-file-if-exists=.env --test --test-force-exit --test-reporter=spec test/audio.test.mjs",

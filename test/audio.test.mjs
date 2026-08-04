@@ -426,7 +426,13 @@ describe("media through the SFU", () => {
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stderr = "";
-    server.stderr.on("data", (chunk) => { stderr += chunk; });
+    server.stderr.on("data", (chunk) => {
+      stderr += chunk;
+      // Printed as it arrives, not only if the server dies. It is quiet in an ordinary run, so what
+      // does appear is worth seeing — a reattempted API call is how a run that passes says something
+      // was briefly wrong, and holding it back would report an unqualified success instead.
+      process.stderr.write(`[server] ${chunk}`);
+    });
     server.once("exit", (code, signal) => {
       if (shuttingDown || code === 0 || code === null || code === 143 || signal) return;
       throw new Error(`playground server exited with ${code}: ${stderr}`);

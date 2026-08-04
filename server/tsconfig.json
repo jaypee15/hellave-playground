@@ -10,5 +10,6 @@
     "esModuleInterop": true,
     "isolatedModules": true
   },
-  "include": ["server"]
+  "//": "Relative to this file, so \"server\" resolved to server/server and matched nothing: tsc failed with TS18003 and the server was never typechecked by anything.",
+  "include": ["."]
 }

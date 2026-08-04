@@ -29,7 +29,7 @@ app.post("/api/create-room", async (req, res) => {
     // A room with the lobby on makes joiners wait for admission, which is what exercises
     // the backend's lobby_admission capability.
     const lobbyEnabled = req.body["lobbyEnabled"] === true;
-    const result = await api.createMeeting({
+    const result = await callApi("creating a room", () => api.createMeeting({
       peerId,
       displayName,
       // Whoever creates the room is its host. This used to depend on lobbyEnabled, which left
@@ -37,7 +37,7 @@ app.post("/api/create-room", async (req, res) => {
       // had just made.
       role: req.body["role"] ?? "host",
       policy: { lobbyEnabled },
-    });
+    }));
     res.json({ ...result, peerId, lobbyEnabled, controlUrl: baseUrl });
   } catch (err: unknown) {
     failed(res, err);
@@ -72,24 +72,25 @@ app.post("/api/token", async (req, res) => {
     }
     const role = req.body["role"] ?? "participant";
     const isHost = role === "host";
-    const mintToken = (lobby: boolean) => api.issueMeetingToken(roomInstanceId, {
-      peerId,
-      sessionId,
-      profile: { displayName, avatarUrl: null },
-      role,
-      capabilities: {
-        publishAudio: true,
-        publishVideo: true,
-        shareScreen: true,
-        sendMessages: true,
-        moderateLobby: isHost,
-        moderateParticipants: isHost,
-        setSpotlight: isHost,
-        controlRecording: isHost,
-        updateProfile: true,
-      },
-      lobby,
-    });
+    const mintToken = (lobby: boolean) => callApi("refreshing a meeting token", () =>
+      api.issueMeetingToken(roomInstanceId, {
+        peerId,
+        sessionId,
+        profile: { displayName, avatarUrl: null },
+        role,
+        capabilities: {
+          publishAudio: true,
+          publishVideo: true,
+          shareScreen: true,
+          sendMessages: true,
+          moderateLobby: isHost,
+          moderateParticipants: isHost,
+          setSpotlight: isHost,
+          controlRecording: isHost,
+          updateProfile: true,
+        },
+        lobby,
+      }));
 
     // Only the caller knows whether this attach should wait for admission, and only the first one
     // ever should — a reconnect is already past the lobby, and asking again would send the person
@@ -122,26 +123,32 @@ app.post("/api/join-room", async (req, res) => {
     const peerId = slugify(displayName);
     const role = req.body["role"] ?? "participant";
     const isHost = role === "host";
-    const mintToken = (lobby: boolean) => api.issueMeetingToken(roomInstanceId, {
-      peerId,
-      sessionId: crypto.randomUUID(),
-      profile: { displayName, avatarUrl: null },
-      role,
-      capabilities: {
-        publishAudio: true,
-        publishVideo: true,
-        shareScreen: true,
-        sendMessages: true,
-        moderateLobby: isHost,
-        moderateParticipants: isHost,
-        setSpotlight: isHost,
-        // Follows the role, matching createMeeting. Signaling additionally requires the host
-        // role, so granting this to a participant would be refused anyway.
-        controlRecording: isHost,
-        updateProfile: true,
-      },
-      lobby,
-    });
+    // Minted once, outside the call, so a reattempt presents the same session. A request lost in
+    // transit may still have reached the API, and the same peer arriving on a *different* session is
+    // refused outright with "peer_id is already connected in this room" — whereas the same session
+    // is read as a reconnect and replaces the attachment, which is what a retry should mean.
+    const sessionId = crypto.randomUUID();
+    const mintToken = (lobby: boolean) => callApi("joining a room", () =>
+      api.issueMeetingToken(roomInstanceId, {
+        peerId,
+        sessionId,
+        profile: { displayName, avatarUrl: null },
+        role,
+        capabilities: {
+          publishAudio: true,
+          publishVideo: true,
+          shareScreen: true,
+          sendMessages: true,
+          moderateLobby: isHost,
+          moderateParticipants: isHost,
+          setSpotlight: isHost,
+          // Follows the role, matching createMeeting. Signaling additionally requires the host
+          // role, so granting this to a participant would be refused anyway.
+          controlRecording: isHost,
+          updateProfile: true,
+        },
+        lobby,
+      }));
 
     // A joiner knows only the room instance id, and Hellave exposes no way to read a room's
     // policy, so it cannot tell whether admission is required. Asking for lobby placement in
@@ -173,6 +180,53 @@ app.post("/api/join-room", async (req, res) => {
     failed(res, err);
   }
 });
+
+/** Attempts in total, so two reattempts, spaced 250ms then 500ms. */
+const API_ATTEMPTS = 3;
+const API_RETRY_BASE_DELAY_MS = 250;
+
+/**
+ * Call the Hellave API, reattempting a failure that says nothing about the request itself.
+ *
+ * Two kinds qualify, and nothing else:
+ *
+ * - **No response at all.** fetch rejects with a bare "fetch failed" and no status, so a name that
+ *   momentarily would not resolve, or a connection dropped in transit, was indistinguishable from
+ *   the API refusing the request. This is what cost a media suite run: the create-room request left
+ *   no trace whatsoever in the API's access log.
+ * - **A response the backend itself marked retryable**, which is how it reports a node it could not
+ *   reach yet. `retryable: false` is a decision about this request and reattempting it only repeats
+ *   the refusal — including the lobby refusal that /api/token and /api/join-room fall back on, which
+ *   has to keep arriving unchanged.
+ *
+ * Creating a meeting is not idempotent, so a connection lost *after* the API committed can leave a
+ * spare room behind. That is deliberate and much the lesser cost: an empty room is retired on its
+ * own, while the alternative is the person who wanted a room not getting one.
+ */
+async function callApi<T>(what: string, call: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await call();
+    } catch (err: unknown) {
+      if (attempt >= API_ATTEMPTS || !worthReattempting(err)) throw err;
+      // Logged, not silent: a retry means something was briefly wrong, and a test run that passes
+      // by retrying should still say so rather than reporting an unqualified success.
+      console.warn(
+        `${what}: ${describeError(err)} — reattempting (${attempt + 1} of ${API_ATTEMPTS})`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, API_RETRY_BASE_DELAY_MS * attempt));
+    }
+  }
+}
+
+function worthReattempting(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  // A status means the API answered, and then only its own verdict decides.
+  if ("status" in err) return "retryable" in err && err.retryable === true;
+  // No status: nothing came back. Narrowed to a transport failure so that a plain bug in this
+  // server is reported at once instead of three times over.
+  return err instanceof TypeError && err.message === "fetch failed";
+}
 
 /**
  * Report a failed Hellave API call to the browser.
