@@ -331,13 +331,41 @@ async function newPage(label) {
   return page;
 }
 
+/**
+ * Wait to be in the room, or fail with the reason the home screen gave.
+ *
+ * The home screen already displays why creating or joining failed, but a test that waits only for
+ * the room id never reads it: a named error like "no capacity for a new room" arrives in one
+ * second and then sits on screen for the full minute, and the run reports
+ * `locator.innerText: Timeout 60000ms exceeded` — which names neither the failure nor the side it
+ * came from. One suite run cost a create-room 500 that way; the message it carried is simply gone.
+ *
+ * The room id keeps the only timeout, so a screen that shows neither still fails as it did before
+ * rather than hanging until the case deadline.
+ */
+async function reachRoom(page, what) {
+  const roomId = page.getByTestId("room-instance-id");
+  const failure = page.getByTestId("home-error");
+  const reported = await Promise.race([
+    roomId.waitFor({ timeout: 60_000 }).then(() => null),
+    failure.waitFor({ timeout: 60_000 }).then(
+      () => failure.innerText(),
+      // Never wins the race, and is not an unhandled rejection either: the room arrived first,
+      // so this locator timing out afterwards means nothing.
+      () => new Promise(() => {}),
+    ),
+  ]);
+  if (reported) throw new Error(`${what}: ${reported}`);
+  return roomId.innerText();
+}
+
 /** Create a room and return its instance id. */
 async function createRoom(page, name) {
   await page.goto(ORIGIN);
   await page.getByRole("button", { name: "Create a Room" }).click();
   await page.getByPlaceholder("Your name").fill(name);
   await page.getByRole("button", { name: /Create & Join|Creating/ }).click();
-  return page.getByTestId("room-instance-id").innerText({ timeout: 60_000 });
+  return reachRoom(page, `${name} could not create a room`);
 }
 
 async function joinRoom(page, roomInstanceId, name) {
@@ -346,7 +374,7 @@ async function joinRoom(page, roomInstanceId, name) {
   await page.getByPlaceholder("Room Instance ID").fill(roomInstanceId);
   await page.getByPlaceholder("Your name").fill(name);
   await page.getByRole("button", { name: /^Join$|Joining/ }).click();
-  await page.getByTestId("room-instance-id").waitFor({ timeout: 60_000 });
+  await reachRoom(page, `${name} could not join ${roomInstanceId}`);
 }
 
 /**

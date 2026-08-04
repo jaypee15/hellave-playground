@@ -46,6 +46,25 @@ async function newPage(label, { grantMedia = true, viewport } = {}) {
   return page;
 }
 
+/**
+ * Wait to be in the room, or fail with the reason the home screen gave.
+ *
+ * Waiting only for the room id throws away a message the app is already displaying: a named
+ * failure turns into `Timeout 60000ms exceeded`, which names neither the cause nor the side it
+ * came from. The room id keeps the only deadline, so a screen showing neither still fails as it
+ * did before instead of hanging until the case times out.
+ */
+async function reachRoom(page, what) {
+  const failure = page.getByTestId("home-error");
+  const reported = await Promise.race([
+    page.getByTestId("room-instance-id").waitFor({ timeout: 60_000 }).then(() => null),
+    // The losing branch resolves to a promise that never settles rather than rejecting: once the
+    // room has arrived, this locator timing out afterwards means nothing.
+    failure.waitFor({ timeout: 60_000 }).then(() => failure.innerText(), () => new Promise(() => {})),
+  ]);
+  if (reported) throw new Error(`${what}: ${reported}`);
+}
+
 /** Create a room through the UI and land in the meeting screen. */
 async function hostInRoom(name = "ui-host") {
   const page = await newPage(name);
@@ -53,7 +72,7 @@ async function hostInRoom(name = "ui-host") {
   await page.getByRole("button", { name: "Create a Room" }).click();
   await page.getByPlaceholder("Your name").fill(name);
   await page.getByRole("button", { name: /Create & Join|Creating/ }).click();
-  await page.getByTestId("room-instance-id").waitFor({ timeout: 60_000 });
+  await reachRoom(page, `${name} could not create a room`);
   // The room id renders as soon as attach resolves, but chat, hands and reactions are only
   // accepted from an admitted attachment — and the controls are disabled until then.
   await page.getByTestId("conference-state").getByText("admitted").waitFor({ timeout: 60_000 });
@@ -376,7 +395,7 @@ describe("playground interface", () => {
     // And it is a working invite, not just a filled field.
     await guest.getByPlaceholder("Your name").fill("invite-guest");
     await guest.getByRole("button", { name: /^Join$|Joining/ }).click();
-    await guest.getByTestId("room-instance-id").waitFor({ timeout: 60_000 });
+    await reachRoom(guest, "the invited guest could not join");
     assert.equal(await guest.getByTestId("room-instance-id").innerText(), roomInstanceId);
   });
 });

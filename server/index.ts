@@ -40,10 +40,7 @@ app.post("/api/create-room", async (req, res) => {
     });
     res.json({ ...result, peerId, lobbyEnabled, controlUrl: baseUrl });
   } catch (err: unknown) {
-    const status = err instanceof Error && "status" in err
-      ? (err as { status: number }).status
-      : 500;
-    res.status(status).json({ error: err instanceof Error ? err.message : "Unknown error" });
+    failed(res, err);
   }
 });
 
@@ -111,10 +108,7 @@ app.post("/api/token", async (req, res) => {
     }
     res.json({ token: token.token, expiresAt: token.expiresAt });
   } catch (err: unknown) {
-    const status = err instanceof Error && "status" in err
-      ? (err as { status: number }).status
-      : 500;
-    res.status(status).json({ error: err instanceof Error ? err.message : "Unknown error" });
+    failed(res, err);
   }
 });
 
@@ -176,12 +170,50 @@ app.post("/api/join-room", async (req, res) => {
       controlUrl: baseUrl,
     });
   } catch (err: unknown) {
-    const status = err instanceof Error && "status" in err
-      ? (err as { status: number }).status
-      : 500;
-    res.status(status).json({ error: err instanceof Error ? err.message : "Unknown error" });
+    failed(res, err);
   }
 });
+
+/**
+ * Report a failed Hellave API call to the browser.
+ *
+ * The cause carries the part worth reading. A request that never reaches the API arrives here as a
+ * bare "fetch failed" with no status, so it is reported as a 500 that looks like the API rejecting
+ * us — and only the cause separates a name that would not resolve from a connection that was
+ * dropped. A media suite run was lost to exactly that: the create-room request left no trace in the
+ * API's access log, and "fetch failed" was everything it left behind on this side.
+ */
+function failed(res: express.Response, err: unknown): void {
+  const status = err instanceof Error && "status" in err
+    ? (err as { status: number }).status
+    : 500;
+  res.status(status).json({ error: describeError(err) });
+}
+
+/** An error together with the causes underneath it, which is where fetch keeps the real reason. */
+function describeError(err: unknown): string {
+  if (!(err instanceof Error)) return "Unknown error";
+  const parts = [named(err)];
+  let cause: unknown = err.cause;
+  // Bounded: a cause chain is short in practice, and a cycle would otherwise not terminate.
+  for (let depth = 0; cause instanceof Error && depth < 4; depth += 1) {
+    parts.push(named(cause));
+    // A host with several addresses fails as an AggregateError whose own message is empty, so the
+    // reason is only in the errors it collected.
+    if (cause instanceof AggregateError && cause.errors.length > 0) {
+      cause = cause.errors[0];
+      continue;
+    }
+    cause = cause.cause;
+  }
+  return parts.filter(Boolean).join(": ");
+}
+
+function named(err: Error): string {
+  const code = "code" in err ? String((err as { code: unknown }).code) : "";
+  if (!err.message) return code;
+  return code && !err.message.includes(code) ? `${err.message} (${code})` : err.message;
+}
 
 /**
  * Read the `room_id` claim from a meeting token.

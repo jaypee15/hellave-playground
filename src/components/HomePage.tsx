@@ -137,7 +137,12 @@ export default function HomePage({
           )}
 
           {error && (
-            <p className="mt-4 rounded-lg bg-danger/15 px-3 py-2 text-sm text-danger">{error}</p>
+            <p
+              data-testid="home-error"
+              className="mt-4 rounded-lg bg-danger/15 px-3 py-2 text-sm text-danger"
+            >
+              {error}
+            </p>
           )}
 
           {mode !== "choose" && (
