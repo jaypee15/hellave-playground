@@ -586,11 +586,10 @@ describe("media through the SFU", () => {
   // own a_participant_offer_supersedes_an_sfu_offer_awaiting_an_answer; this shows the symptom is
   // gone from a real call.
   //
-  // Measured after the glare fix: 13 of 15 local runs pass, against 1 of 2 pointed at a deployed SFU
-  // that still refused glare. So it still fails occasionally, with no glare rejection in the SFU log,
-  // no error from signaling and no participant left unconnected — "participant 1 never published"
-  // with nothing anywhere saying why. That residual cause is NOT diagnosed. This case is left in the
-  // suite because it is the only thing that reports it.
+  // Measured against the local stack, twelve runs each, pass/fail taken from the runner's exit
+  // status: 7 of 12 with SDK 0.5.15, 12 of 12 with 0.5.16. The residual failures were the mirror of
+  // this bug — an Edge offer crossing the client's own, which the SDK terminated the attachment over
+  // (Hellave-SDKS 874cff4, and the timeout it needs in Hellave be7c301).
   it("carries audio when everyone publishes at once", CASE_TIMEOUT, async () => {
     const pages = [];
     for (const label of ["race-first", "race-second", "race-third"]) {
