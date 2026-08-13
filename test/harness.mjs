@@ -58,6 +58,15 @@ export const WS_SPY = `
         // Concatenation, not a template literal: this whole spy is itself a template literal, so
         // an inner placeholder would be interpolated by the outer one at module load.
         record.transcript.push(arrow + (value.type || "?"));
+        // The SDP of every offer/restart/replace sent, so a negotiation the SFU rejects can be
+        // inspected: the m-line kinds and their directions are what the SFU counts.
+        if (arrow === ">" && ["media_offer", "media_restart", "media_replace"].includes(value.type)) {
+          const summary = (value.sdp || "")
+            .split(/\r?\n/)
+            .filter((line) => /^m=/.test(line) || /^a=send/.test(line) || /^a=recv/.test(line) || /^a=inactive/.test(line))
+            .join(" | ");
+          record.transcript.push(">" + value.type + "::" + summary);
+        }
         // Lifetime notices carry the deadline that governs the session, and a session torn down
         // early looks identical to a negotiation failure from the outside.
         if (arrow === "<" && /expir|terminat|clos|ice_servers/i.test(value.type || "")) {
@@ -250,6 +259,27 @@ export async function appEvents(page) {
     await drawer.waitFor({ timeout: 30_000 }).catch(() => {});
   }
   return drawer.innerText().catch(() => "(no event log available)");
+}
+
+/**
+ * The media offers this page sent, each as a one-line summary of m-lines and their directions.
+ *
+ * The SFU rejects a publication offer whose publishing-section count does not match the declared
+ * source ("publication must bind exactly one source of its declared kind"); the summary shows what
+ * the SFU was counting.
+ */
+export async function sentOfferSummaries(page) {
+  return page.evaluate(() => {
+    const out = [];
+    for (const ws of window.__hellaveSockets ?? []) {
+      for (const message of ws.transcript ?? []) {
+        if (message.includes("::") && /^>media_(offer|restart|replace)/.test(message)) {
+          out.push(message.slice(1));
+        }
+      }
+    }
+    return out;
+  });
 }
 
 /**
