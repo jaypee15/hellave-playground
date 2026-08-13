@@ -84,7 +84,7 @@ async function raiseHand(page, label) {
 
 async function sendReaction(page, label) {
   await page.getByTestId("reactions-toggle").click();
-  await page.getByRole("button", { name: "👍" }).click().catch(() => {});
+  await page.getByRole("button", { name: "thumbs_up" }).click().catch(() => {});
 }
 
 describe("load check", () => {
@@ -183,6 +183,28 @@ describe("load check", () => {
           );
         }
       }
+
+      // Control plane at scale: a hand raise and a reaction must reach another participant's
+      // event log, proving the ephemeral channel still works under the same load.
+      const sender = pages[0];
+      const observer = pages[1];
+      const observerEvents = () => appEvents(observer);
+      await sender.getByTestId("hand-toggle").click();
+      await waitFor(
+        () => observerEvents(),
+        (text) => /raised their hand/.test(text),
+        20_000,
+        "a raised hand never reached another participant",
+      );
+      await sender.getByTestId("hand-toggle").click();
+      await sender.getByTestId("reactions-toggle").click();
+      await sender.getByRole("button", { name: "thumbs_up" }).click();
+      await waitFor(
+        () => observerEvents(),
+        (text) => /reacted: thumbs_up/.test(text),
+        20_000,
+        "a reaction never reached another participant",
+      );
     },
   );
 });
