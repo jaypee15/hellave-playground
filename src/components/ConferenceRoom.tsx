@@ -15,6 +15,7 @@ import { inviteLink } from "../invite.js";
 import LobbyRequests from "./LobbyRequests.js";
 import ReactionOverlay, { type FloatingReaction } from "./ReactionOverlay.js";
 import DebugDrawer from "./DebugDrawer.js";
+import NetworkNotice from "./NetworkNotice.js";
 
 interface Props {
   client: HellaveClient;
@@ -64,6 +65,9 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
   const [localVideo, setLocalVideo] = useState<MediaStream | null>(null);
   const [error, setError] = useState("");
   const [mediaPath, setMediaPath] = useState("");
+  const [attribution, setAttribution] = useState<
+    "your_network" | "hellave_service" | "unknown"
+  >("unknown");
   const [publication, setPublication] = useState<MediaPublication | null>(null);
   const [cameraPublication, setCameraPublication] = useState<MediaPublication | null>(null);
   const [screenPublication, setScreenPublication] = useState<MediaPublication | null>(null);
@@ -150,12 +154,17 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
         setConference(conf);
         setState(conf.state);
         applySnapshot(conf.snapshot);
+        setAttribution(conf.networkAttribution);
         addEvent(`Connected. State: ${conf.state}`);
 
         conf.on("stateChanged", (s) => {
           setState(s);
           applySnapshot(conf.snapshot);
           addEvent(`State changed: ${s}`);
+        });
+
+        conf.on("networkAttributionChanged", (attribution) => {
+          setAttribution(attribution);
         });
 
         conf.on("snapshotChanged", (snap) => {
@@ -632,6 +641,7 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
 
       <main className="relative flex min-h-0 flex-1 gap-3 px-3 pb-2 sm:px-4">
         <div className="relative min-w-0 flex-1">
+          <NetworkNotice attribution={attribution} />
           <VideoGrid participants={tiles} featuredId={spotlightOwner} view={view} />
           <ReactionOverlay reactions={floating} />
           {canModerateLobby && (
