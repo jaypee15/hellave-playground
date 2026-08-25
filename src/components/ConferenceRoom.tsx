@@ -69,6 +69,10 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
     "your_network" | "hellave_service" | "unknown"
   >("unknown");
   const [publication, setPublication] = useState<MediaPublication | null>(null);
+  // Audio-first degradation: after sustained "poor" quality, pause inbound video so the
+  // remaining bandwidth carries audio. Restored automatically once quality recovers.
+  const [videoPausedForQuality, setVideoPausedForQuality] = useState(false);
+  const videoPausedForQualityRef = useRef(false);
   const [cameraPublication, setCameraPublication] = useState<MediaPublication | null>(null);
   const [screenPublication, setScreenPublication] = useState<MediaPublication | null>(null);
   const [lobby, setLobby] = useState<readonly LobbyParticipant[]>([]);
@@ -165,6 +169,36 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
 
         conf.on("networkAttributionChanged", (attribution) => {
           setAttribution(attribution);
+        });
+
+        // Audio-first resilience: sustained "poor" pauses inbound video (freeing bandwidth
+        // for audio); recovery to good/excellent restores it. One-shot per degradation —
+        // never flaps, because restoration only happens from a healthy reading.
+        let poorSince: number | null = null;
+        const POOR_GRACE_MS = 10_000;
+        conf.on("connectionQualityChanged", (quality) => {
+          if (quality === "poor") {
+            poorSince ??= Date.now();
+            if (
+              !videoPausedForQualityRef.current &&
+              Date.now() - poorSince >= POOR_GRACE_MS
+            ) {
+              videoPausedForQualityRef.current = true;
+              setVideoPausedForQuality(true);
+              conf
+                .setSubscriptionPolicy({ videoEnabled: false })
+                .catch(() => {});
+              addEvent("Poor connection: paused incoming video to protect audio");
+            }
+          } else if (quality !== "fair") {
+            poorSince = null;
+            if (videoPausedForQualityRef.current) {
+              videoPausedForQualityRef.current = false;
+              setVideoPausedForQuality(false);
+              conf.setSubscriptionPolicy({ videoEnabled: true }).catch(() => {});
+              addEvent("Connection recovered: restored incoming video");
+            }
+          }
         });
 
         conf.on("snapshotChanged", (snap) => {
@@ -642,6 +676,25 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
       <main className="relative flex min-h-0 flex-1 gap-3 px-3 pb-2 sm:px-4">
         <div className="relative min-w-0 flex-1">
           <NetworkNotice attribution={attribution} />
+          {videoPausedForQuality && (
+            <div
+              data-testid="video-quality-pause-notice"
+              className="mx-3 mb-2 flex items-center justify-between gap-2 rounded-lg bg-live/15 px-3 py-2 text-sm font-medium text-live ring-1 ring-live/40 sm:mx-4"
+            >
+              <span>Poor connection — incoming video paused to protect audio.</span>
+              <button
+                data-testid="resume-video"
+                className="shrink-0 rounded px-2 py-1 text-xs font-semibold underline hover:opacity-80"
+                onClick={() => {
+                  videoPausedForQualityRef.current = false;
+                  setVideoPausedForQuality(false);
+                  conference?.setSubscriptionPolicy({ videoEnabled: true }).catch(() => {});
+                }}
+              >
+                Resume video
+              </button>
+            </div>
+          )}
           <VideoGrid participants={tiles} featuredId={spotlightOwner} view={view} />
           <ReactionOverlay reactions={floating} />
           {canModerateLobby && (
