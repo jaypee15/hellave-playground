@@ -7,6 +7,7 @@ export interface TileParticipant {
   audioStream?: MediaStream;
   videoStream?: MediaStream;
   handRaised: boolean;
+  activeSpeaker: boolean;
   muted: boolean;
   isLocal: boolean;
 }
@@ -101,6 +102,10 @@ export default function VideoTile({ participant, prominent = false }: Props) {
       data-testid={`tile-${participant.id}`}
       className={`group relative aspect-video w-full overflow-hidden rounded-xl bg-room-850 ring-1 ring-room-700 ${
         participant.handRaised ? "ring-2 ring-amber-400" : ""
+      } ${
+        participant.activeSpeaker && !participant.isLocal
+          ? "ring-2 ring-live"
+          : ""
       }`}
     >
       {videoLive ? (

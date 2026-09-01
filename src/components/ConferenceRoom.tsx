@@ -91,6 +91,7 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
   const [unread, setUnread] = useState(0);
   const [raisedHands, setRaisedHands] = useState<ReadonlySet<string>>(new Set());
   const [handRaised, setHandRaised] = useState(false);
+  const [activeSpeaker, setActiveSpeaker] = useState<string | null>(null);
   const [floating, setFloating] = useState<FloatingReaction[]>([]);
   const [view, setView] = useState<"grid" | "speaker">("grid");
   const eventsRef = useRef<LogEvent[]>([]);
@@ -169,6 +170,10 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
 
         conf.on("networkAttributionChanged", (attribution) => {
           setAttribution(attribution);
+        });
+
+        conf.on("activeSpeakerChanged", (peerId) => {
+          setActiveSpeaker(peerId);
         });
 
         // Audio-first resilience: sustained "poor" pauses inbound video (freeing bandwidth
@@ -515,6 +520,7 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
         : remoteVideo.find((t) => t.participantId === participant.id && !isScreen(t.publicationId))
           ?.stream,
       handRaised: raisedHands.has(participant.id),
+      activeSpeaker: activeSpeaker === participant.id,
       muted: participant.id === peerId ? muted : participant.mutedAudio,
       isLocal: participant.id === peerId,
     }));
@@ -527,6 +533,7 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
         role: "participant",
         videoStream: localVideo,
         handRaised: handRaised,
+        activeSpeaker: false,
         muted,
         isLocal: true,
       }];
@@ -544,6 +551,7 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
         role: "screen",
         videoStream: track.stream,
         handRaised: false,
+        activeSpeaker: false,
         muted: false,
         isLocal: false,
       }));
@@ -553,7 +561,8 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
     remoteAudio,
     remoteVideo,
     localVideo,
-    raisedHands,
+raisedHands,
+    activeSpeaker,
     muted,
     peerId,
     handRaised,
