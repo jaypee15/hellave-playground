@@ -135,6 +135,15 @@ export default function VideoTile({ participant, prominent = false }: Props) {
       {participant.audioStream && !participant.isLocal && <audio ref={audioRef} autoPlay />}
 
       <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/70 to-transparent p-3">
+        {participant.activeSpeaker && !participant.isLocal && (
+          <span
+            aria-label="Speaking"
+            className="flex animate-pulse items-center gap-1 rounded bg-live px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-black"
+          >
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-black" />
+            Speaking
+          </span>
+        )}
         <span className={`truncate font-medium ${prominent ? "text-base" : "text-sm"}`}>
           {participant.displayName}
           {participant.isLocal && <span className="text-room-400"> (you)</span>}

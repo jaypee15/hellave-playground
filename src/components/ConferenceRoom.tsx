@@ -685,6 +685,19 @@ raisedHands,
       <main className="relative flex min-h-0 flex-1 gap-3 px-3 pb-2 sm:px-4">
         <div className="relative min-w-0 flex-1">
           <NetworkNotice attribution={attribution} />
+          {activeSpeaker && (
+            <div
+              data-testid="now-speaking"
+              className="mx-3 mb-2 flex items-center gap-2 rounded-lg bg-live/15 px-3 py-2 text-sm font-medium text-live ring-1 ring-live/40 sm:mx-4"
+            >
+              <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-live" />
+              <span>
+                {activeSpeaker === peerId
+                  ? "You are speaking"
+                  : `${activeSpeaker} is speaking`}
+              </span>
+            </div>
+          )}
           {videoPausedForQuality && (
             <div
               data-testid="video-quality-pause-notice"
