@@ -126,6 +126,21 @@ describe("long meeting", () => {
           process.stderr.write(`[long-meeting] ${leaverName} left; a late joiner arrives\n`);
           const late = await harness.newPage("late-joiner");
           await harness.joinRoom(late, roomInstanceId, "late-joiner");
+          // A real late joiner turns on their mic and camera too — the whole point is to
+          // watch the room re-converge around the newcomer.
+          // A real late joiner turns on their mic and camera too — the whole point is to
+          // watch the room re-converge around the newcomer.
+          const latePublish = late.getByRole("button", { name: "Publish Mic" });
+          await latePublish.waitFor({ timeout: 60_000 });
+          await latePublish.click();
+          await waitFor(
+            () => outboundAudio(late),
+            (t) => t.packetsSent > 0,
+            MEDIA_WAIT_MS,
+            "the late joiner never sent microphone RTP",
+          );
+          await harness.startCamera(late, "late-joiner");
+          await harness.startCamera(late, "late-joiner");
           pages.push(late);
           churn.done = true;
           churn.settledAt = Date.now() + 60_000; // convergence grace before floor checks resume
