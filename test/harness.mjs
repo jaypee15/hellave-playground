@@ -62,14 +62,24 @@ export const WS_SPY = `
         // inspected: the m-line kinds and their directions are what the SFU counts.
         if (arrow === ">" && ["media_offer", "media_restart", "media_replace"].includes(value.type)) {
           const summary = (value.sdp || "")
-            .split(/\r?\n/)
+            // Double-escaped on purpose. This spy is a template literal, so a singly-escaped
+            // carriage-return or newline is consumed right here and the browser receives a regex
+            // containing a real line terminator — which a regex literal may not contain. It threw
+            // at install time, so window.__hellaveSockets was never defined, socketReport() always
+            // answered [], and every control-socket assertion in this suite passed by having
+            // nothing at all to check. Same trap as the interpolation note above, different escape.
+            .split(/\\r?\\n/)
             .filter((line) => /^m=/.test(line) || /^a=send/.test(line) || /^a=recv/.test(line) || /^a=inactive/.test(line))
             .join(" | ");
           record.transcript.push(">" + value.type + "::" + summary);
         }
         // Lifetime notices carry the deadline that governs the session, and a session torn down
         // early looks identical to a negotiation failure from the outside.
-        if (arrow === "<" && /expir|terminat|clos|ice_servers/i.test(value.type || "")) {
+        // Errors included: a control_error is what actually ends a session, and the transcript
+        // records only the type — so a run could show "attach then control_error" and still not
+        // say what the server refused or whether it was terminal. The payload is the diagnosis.
+        // (No backticks in here: this spy is itself a template literal and one would end it.)
+        if (arrow === "<" && /expir|terminat|clos|ice_servers|error/i.test(value.type || "")) {
           record.notices.push(data.slice(0, 400));
         }
       } catch {
