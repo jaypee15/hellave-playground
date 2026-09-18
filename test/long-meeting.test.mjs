@@ -38,6 +38,14 @@ const MEETING_SECS = Number(process.env["LONG_MEETING_SECS"] ?? 300);
 const CHURN_AT_SECS = Number(process.env["LONG_MEETING_CHURN_AT_SECS"] ?? 150);
 const JOIN_STAGGER_MS = Number(process.env["LONG_MEETING_JOIN_STAGGER_MS"] ?? 6_000);
 const CHECK_INTERVAL_SECS = 30;
+/**
+ * Set 0 to hold the meeting on microphones alone.
+ *
+ * Diagnostic, not a lighter test: cameras are three simulcast encodes per peer, so at four peers
+ * this machine is running twelve of them, and that is the difference between measuring Hellave and
+ * measuring the laptop the browsers are on. Turning them off says which one a run is about.
+ */
+const WITH_VIDEO = process.env["LONG_MEETING_VIDEO"] !== "0";
 const MEDIA_WAIT_MS = 45_000;
 /** The SFU's per-subscriber video budget (DEFAULT_MAX_VIDEO_CONSUMERS). */
 const VIDEO_BUDGET = 4;
@@ -90,7 +98,7 @@ describe("long meeting", () => {
           MEDIA_WAIT_MS,
           `${name} never sent microphone RTP`,
         );
-        await harness.startCamera(page, name);
+        if (WITH_VIDEO) await harness.startCamera(page, name);
       }
       const load = os.loadavg().map((value) => value.toFixed(1)).join(" ");
       process.stderr.write(
@@ -98,8 +106,21 @@ describe("long meeting", () => {
       );
 
       const anomalies = [];
-      const note = (text) => {
-        const stamped = `[t+${Math.round((Date.now() - startedAt) / 1_000)}s] ${text}`;
+      /** Evidence captured the moment a page first misbehaves — stale later. */
+      const deadPageEvidence = new Map();
+      const captureIfDead = async (tag, page) => {
+        if (deadPageEvidence.has(tag)) return;
+        deadPageEvidence.set(tag, {
+          ice: await iceDiagnostics(page).catch(() => null),
+          sockets: await socketReport(page).catch(() => null),
+          events: await appEvents(page).catch(() => ""),
+          outboundAudio: await outboundAudio(page).catch(() => null),
+          outboundVideo: await outboundVideo(page).catch(() => null),
+        });
+      };
+      const note = async (tag, page, text) => {
+        if (!deadPageEvidence.has(tag)) await captureIfDead(tag, page);
+        const stamped = `[t+${Math.round((Date.now() - startedAt) / 1_000)}s] ${tag}: ${text}`;
         anomalies.push(stamped);
         process.stderr.write(`[long-meeting] ${stamped}\n`);
       };
@@ -139,8 +160,8 @@ describe("long meeting", () => {
             MEDIA_WAIT_MS,
             "the late joiner never sent microphone RTP",
           );
-          await harness.startCamera(late, "late-joiner");
-          await harness.startCamera(late, "late-joiner");
+          if (WITH_VIDEO) await harness.startCamera(late, "late-joiner");
+          if (WITH_VIDEO) await harness.startCamera(late, "late-joiner");
           pages.push(late);
           churn.done = true;
           churn.settledAt = Date.now() + 60_000; // convergence grace before floor checks resume
@@ -152,12 +173,21 @@ describe("long meeting", () => {
         for (const [index, page] of pages.entries()) {
           const tag = nameOf(index);
           const [audio, video] = await Promise.all([outboundAudio(page), outboundVideo(page)]);
-          const previous = lastSent.get(tag) ?? { audio: 0, video: 0 };
+          const previous = lastSent.get(tag) ?? { audio: 0, video: 0, stalls: 0 };
           const advanced = audio.packetsSent > previous.audio || video.packetsSent > previous.video;
-          lastSent.set(tag, { audio: audio.packetsSent, video: video.packetsSent });
+          // A recovered transport is a new PeerConnection, and its counters start at zero — below
+          // whatever the one it replaced had reached. Flagging the first non-advancing sample
+          // therefore reports every successful recovery as a peer that stopped sending, which is
+          // exactly backwards. A real stall persists, so it takes two in a row to count.
+          const stalls = advanced ? 0 : previous.stalls + 1;
+          lastSent.set(tag, {
+            audio: audio.packetsSent,
+            video: video.packetsSent,
+            stalls,
+          });
 
           const inbound = await inboundAudio(page);
-          const videoIn = await inboundVideo(page);
+          const videoIn = WITH_VIDEO ? await inboundVideo(page) : { packetsReceived: 1 };
           const state = await page.getByTestId("conference-state").innerText().catch(() => "gone");
           audioFloorTimeline.push({
             at: Math.round((Date.now() - startedAt) / 1000),
@@ -167,21 +197,21 @@ describe("long meeting", () => {
             packets: inbound.packetsReceived,
           });
 
-          if (!advanced) {
-            note(`${tag} stopped sending media (audio ${JSON.stringify(audio)}, video ${JSON.stringify(video)})`);
+          if (stalls >= 2) {
+            await note(tag, page, `stopped sending media (audio ${JSON.stringify(audio)}, video ${JSON.stringify(video)})`);
           }
           if (!/admitted|connected/i.test(state)) {
-            note(`${tag} left the admitted state (state=${state})`);
+            await note(tag, page, `left the admitted state (state=${state})`);
           }
           if (floorChecksActive && inbound.tracks < active - 1) {
-            note(`${tag} audio floor short: ${inbound.tracks}/${active - 1} tracks, ${inbound.packetsReceived} packets`);
+            await note(tag, page, `audio floor short: ${inbound.tracks}/${active - 1} tracks, ${inbound.packetsReceived} packets`);
           }
           if (inbound.tracks === 0 && inbound.packetsReceived === 0) {
-            note(`${tag} receives no audio at all (total media loss)`);
+            await note(tag, page, `receives no audio at all (total media loss)`);
           }
           const known = page.consoleErrors.find((text) => KNOWN_ERRORS.some((re) => re.test(text)));
           if (known) {
-            note(`${tag} surfaced a negotiation/publication error: ${known}`);
+            await note(tag, page, `surfaced a negotiation/publication error: ${known}`);
           }
         }
 
@@ -201,16 +231,34 @@ describe("long meeting", () => {
 
       // Final audit: after churn settles, every live participant must hear the other actives.
       const active = pages.length;
-      for (const [index, page] of pages.entries()) {
-        const name = nameOf(index);
-        await waitFor(
-          () => inboundAudio(page),
-          (t) => t.tracks >= active - 1 && t.packetsReceived > 0,
-          MEDIA_WAIT_MS,
-          `${name} did not hear the other ${active - 1} participants — last observed: ${JSON.stringify(await inboundAudio(page))}`,
-        );
-        const videoIn = await inboundVideo(page);
-        assert.ok(videoIn.packetsReceived > 0, `${name} received no video: ${JSON.stringify(videoIn)}`);
+      // Which page the audit was on when it threw, so the evidence below is that page's and not
+      // the host's. Capturing pages[0] regardless is how a final-audit failure came with a
+      // transcript for a participant that was perfectly healthy, and none for the one that failed.
+      let auditing = { name: "p01", page: pages[0] };
+      try {
+        for (const [index, page] of pages.entries()) {
+          const name = nameOf(index);
+          auditing = { name, page };
+          await waitFor(
+            () => inboundAudio(page),
+            (t) => t.tracks >= active - 1 && t.packetsReceived > 0,
+            MEDIA_WAIT_MS,
+            `${name} did not hear the other ${active - 1} participants — last observed: ${JSON.stringify(await inboundAudio(page))}`,
+          );
+          const videoIn = WITH_VIDEO ? await inboundVideo(page) : { packetsReceived: 1 };
+          assert.ok(videoIn.packetsReceived > 0, `${name} received no video: ${JSON.stringify(videoIn)}`);
+        }
+      } catch (error) {
+        await captureIfDead(`final-audit:${auditing.name}`, auditing.page);
+        for (const [tag, captured] of deadPageEvidence) {
+          process.stderr.write(
+            `\n[long-meeting] ===== ${tag} (at first anomaly) =====\nICE: ${JSON.stringify(captured.ice)}\n` +
+              `sockets: ${JSON.stringify(captured.sockets)}\n` +
+              `outboundAudio: ${JSON.stringify(captured.outboundAudio)}\noutboundVideo: ${JSON.stringify(captured.outboundVideo)}\n` +
+              `events:\n${captured.events}\n`,
+          );
+        }
+        throw error;
       }
 
       // The timeline is the point of this suite: dump it even on a clean pass, and fail
@@ -218,11 +266,12 @@ describe("long meeting", () => {
       process.stderr.write(`\n[long-meeting] audio floor timeline:\n${JSON.stringify(audioFloorTimeline)}\n`);
       if (anomalies.length > 0) {
         const evidence = [];
-        for (const [index, page] of pages.entries()) {
+        for (const [tag, captured] of deadPageEvidence) {
           evidence.push(
-            `\n===== ${nameOf(index)} =====\n` +
-              `events:\n${await appEvents(page)}\nsockets: ${JSON.stringify(await socketReport(page))}\n` +
-              `ICE: ${JSON.stringify(await iceDiagnostics(page))}\n`,
+            `\n===== ${tag} (captured at first anomaly) =====\n` +
+              `ICE: ${JSON.stringify(captured.ice)}\nsockets: ${JSON.stringify(captured.sockets)}\n` +
+              `outboundAudio: ${JSON.stringify(captured.outboundAudio)}\noutboundVideo: ${JSON.stringify(captured.outboundVideo)}\n` +
+              `events:\n${captured.events}\n`,
           );
         }
         throw new Error(

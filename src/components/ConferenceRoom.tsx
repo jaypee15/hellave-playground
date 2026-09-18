@@ -1,6 +1,8 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import {
   HellaveClient,
+  MediaDeviceError,
+  RemoteAudioMixer,
   type Conference,
   type ConferenceState,
   type LobbyParticipant,
@@ -41,7 +43,15 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
   >([]);
   const [publishing, setPublishing] = useState(false);
   const [muted, setMuted] = useState(false);
-  const [remoteAudio, setRemoteAudio] = useState<Array<{ participantId: string; stream: MediaStream }>>([]);
+  /**
+   * Remote microphones play through one Web Audio graph rather than an element per tile.
+   * `HTMLMediaElement.volume` cannot exceed 1, so elements can only ever make a quiet
+   * participant quieter; the mixer's gain is what can actually turn the room up.
+   */
+  const mixerRef = useRef<RemoteAudioMixer | null>(null);
+  const [outputVolume, setOutputVolume] = useState(1);
+  /** Read by the track handler, which closes over the volume as it stood when it was wired up. */
+  const outputVolumeRef = useRef(outputVolume);
   /**
    * Received video, keyed by publication rather than by participant.
    *
@@ -215,11 +225,17 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
         });
 
         conf.on("remoteMicrophoneTrack", (remote) => {
-          const stream = new MediaStream([remote.mediaStreamTrack]);
-          setRemoteAudio((prev) => [
-            ...prev.filter((t) => t.participantId !== remote.ownerParticipantId),
-            { participantId: remote.ownerParticipantId, stream },
-          ]);
+          mixerRef.current ??= new RemoteAudioMixer({ masterGain: outputVolumeRef.current });
+          mixerRef.current.add(remote);
+          // Joining was a gesture, so the context usually starts running — but a context built
+          // while the tab was backgrounded starts suspended, and a suspended context is silent
+          // however the graph is wired. Nothing here waits for the volume slider to be touched.
+          void mixerRef.current.resume();
+          // The Edge sends nothing when a remote publication stops, so the graph would keep a
+          // dead source wired in for the rest of the meeting without this.
+          remote.mediaStreamTrack.addEventListener("ended", () => {
+            mixerRef.current?.remove(remote.publicationId);
+          });
           addEvent(`Remote mic track from ${remote.ownerParticipantId}`);
         });
 
@@ -312,6 +328,23 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
     };
   }, [conference, publishing, addEvent]);
 
+  // Move the graph's output gain with the slider. Moving it is also a user gesture, which is what
+  // lifts the autoplay suspension the browser starts the context under.
+  useEffect(() => {
+    outputVolumeRef.current = outputVolume;
+    const mixer = mixerRef.current;
+    if (!mixer) return;
+    mixer.masterGain = outputVolume;
+    void mixer.resume();
+  }, [outputVolume]);
+
+  // Browsers cap how many AudioContexts a page may hold, so the graph is released with the room
+  // rather than left for collection.
+  useEffect(() => () => {
+    mixerRef.current?.close();
+    mixerRef.current = null;
+  }, []);
+
   const handlePublish = async () => {
     if (!conference) return;
     try {
@@ -358,6 +391,9 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
       addEvent(`Camera published (${pub.id})`);
     } catch (err: unknown) {
       addEvent(`Camera failed: ${err instanceof Error ? err.message : "Unknown"}`);
+      // A device that is missing, busy or refused is the user's to fix, so it belongs on screen
+      // and not only in the event log. Anything else is ours and stays where it was.
+      if (err instanceof MediaDeviceError) setError(err.message);
     }
   };
 
@@ -512,7 +548,6 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
       id: participant.id,
       displayName: participant.displayName,
       role: participant.role,
-      audioStream: remoteAudio.find((t) => t.participantId === participant.id)?.stream,
       // A person's own tile carries their camera. Their screen share, if any, is a tile of its
       // own below — putting it here would mean choosing between the two.
       videoStream: participant.id === peerId
@@ -558,7 +593,6 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
     return [...known, ...shares];
   }, [
     participants,
-    remoteAudio,
     remoteVideo,
     localVideo,
 raisedHands,
@@ -652,6 +686,25 @@ raisedHands,
         )}
 
         <span className="grow" />
+
+        <label
+          className="flex shrink-0 items-center gap-1.5 rounded-lg bg-room-800 px-2.5 py-1.5 text-xs font-medium text-room-400"
+          title="Output volume. Above 100% amplifies past what an audio element can reach."
+        >
+          <span aria-hidden="true">{outputVolume === 0 ? "🔇" : "🔊"}</span>
+          <input
+            type="range"
+            min={0}
+            max={3}
+            step={0.1}
+            value={outputVolume}
+            data-testid="output-volume"
+            aria-label="Output volume"
+            onChange={(event) => setOutputVolume(Number(event.target.value))}
+            className="h-1 w-16 cursor-pointer accent-accent sm:w-24"
+          />
+          <span className="w-9 tabular-nums text-right">{Math.round(outputVolume * 100)}%</span>
+        </label>
 
         <button
           type="button"

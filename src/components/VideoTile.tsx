@@ -4,7 +4,6 @@ export interface TileParticipant {
   id: string;
   displayName: string;
   role: string;
-  audioStream?: MediaStream;
   videoStream?: MediaStream;
   handRaised: boolean;
   activeSpeaker: boolean;
@@ -45,7 +44,6 @@ function initials(name: string): string {
 
 export default function VideoTile({ participant, prominent = false }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const audioRef = useRef<HTMLAudioElement>(null);
   // The Public Edge sends no message when a remote publication stops, so the track's own
   // `ended`/`mute` events are the only signal that the video should stop being shown.
   // Without this the last decoded frame stays on screen as if the camera were still live.
@@ -91,12 +89,6 @@ export default function VideoTile({ participant, prominent = false }: Props) {
     }
   }, [videoLive, participant.videoStream]);
 
-  useEffect(() => {
-    if (audioRef.current && participant.audioStream) {
-      audioRef.current.srcObject = participant.audioStream;
-    }
-  }, [participant.audioStream]);
-
   return (
     <div
       data-testid={`tile-${participant.id}`}
@@ -130,9 +122,9 @@ export default function VideoTile({ participant, prominent = false }: Props) {
         </div>
       )}
 
-      {/* Remote audio is played but never rendered; the local participant hears themselves
-          only through their own hardware, so no element is attached for them. */}
-      {participant.audioStream && !participant.isLocal && <audio ref={audioRef} autoPlay />}
+      {/* No audio element here. Remote microphones play through the room's RemoteAudioMixer,
+          which can amplify past the 1.0 ceiling an element is limited to; an element per tile
+          alongside it would play everyone twice. */}
 
       <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/70 to-transparent p-3">
         {participant.activeSpeaker && !participant.isLocal && (
