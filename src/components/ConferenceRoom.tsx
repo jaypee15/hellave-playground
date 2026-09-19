@@ -35,6 +35,10 @@ interface LogEvent {
 /** How long a floating reaction stays on screen; matches the float-up animation. */
 const REACTION_TTL_MS = 2_800;
 
+/** How long the last speaker stays highlighted after a null active-speaker event, so
+    inter-word silence doesn't blink the highlight on and off. */
+const ACTIVE_SPEAKER_HOLD_MS = 1_000;
+
 export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId, onLeave }: Props) {
   const [conference, setConference] = useState<Conference | null>(null);
   const [state, setState] = useState<ConferenceState>("waiting");
@@ -102,6 +106,9 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
   const [raisedHands, setRaisedHands] = useState<ReadonlySet<string>>(new Set());
   const [handRaised, setHandRaised] = useState(false);
   const [activeSpeaker, setActiveSpeaker] = useState<string | null>(null);
+  // Pending clear of activeSpeaker (set on a null event, cancelled by a new speaker). A ref
+  // because the event handler is registered once inside the attach effect.
+  const activeSpeakerHoldRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [floating, setFloating] = useState<FloatingReaction[]>([]);
   const [view, setView] = useState<"grid" | "speaker">("grid");
   const eventsRef = useRef<LogEvent[]>([]);
@@ -182,8 +189,22 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
           setAttribution(attribution);
         });
 
-        conf.on("activeSpeakerChanged", (peerId) => {
-          setActiveSpeaker(peerId);
+        conf.on("activeSpeakerChanged", (nextSpeaker) => {
+          // A null event means "nobody is speaking right now" and arrives between words; hold
+          // the previous speaker briefly so the highlight doesn't blink. A new non-null value
+          // cancels the pending hold instantly.
+          if (activeSpeakerHoldRef.current !== null) {
+            clearTimeout(activeSpeakerHoldRef.current);
+            activeSpeakerHoldRef.current = null;
+          }
+          if (nextSpeaker === null) {
+            activeSpeakerHoldRef.current = setTimeout(() => {
+              activeSpeakerHoldRef.current = null;
+              setActiveSpeaker(null);
+            }, ACTIVE_SPEAKER_HOLD_MS);
+            return;
+          }
+          setActiveSpeaker(nextSpeaker);
         });
 
         // Audio-first resilience: sustained "poor" pauses inbound video (freeing bandwidth
@@ -301,7 +322,14 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
         }
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      // Re-subscribe (effect re-run), leave, and unmount all cancel a pending hold.
+      if (activeSpeakerHoldRef.current !== null) {
+        clearTimeout(activeSpeakerHoldRef.current);
+        activeSpeakerHoldRef.current = null;
+      }
+    };
   }, [client, roomId, roomInstanceId, peerId, addEvent, pushReaction, applySnapshot]);
 
   // Poll the transport so the actual ICE path is visible: "relay/tcp" means media is going

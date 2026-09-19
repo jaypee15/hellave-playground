@@ -94,12 +94,18 @@ export default function VideoTile({ participant, prominent = false }: Props) {
       data-testid={`tile-${participant.id}`}
       className={`group relative aspect-video w-full overflow-hidden rounded-xl bg-room-850 ring-1 ring-room-700 ${
         participant.handRaised ? "ring-2 ring-amber-400" : ""
-      } ${
-        participant.activeSpeaker && !participant.isLocal
-          ? "ring-2 ring-live"
-          : ""
       }`}
     >
+      {/* Persistent speaking ring: always mounted, faded in/out, so the highlight eases
+          between tiles instead of popping. Inset so the tile's overflow-hidden doesn't clip it. */}
+      <div
+        aria-hidden="true"
+        className={`pointer-events-none absolute inset-0 z-10 rounded-xl inset-ring-2 inset-ring-live transition-all duration-150 ease-out ${
+          participant.activeSpeaker && !participant.isLocal
+            ? "opacity-100"
+            : "opacity-0"
+        }`}
+      />
       {videoLive ? (
         <video
           ref={videoRef}
@@ -127,15 +133,20 @@ export default function VideoTile({ participant, prominent = false }: Props) {
           alongside it would play everyone twice. */}
 
       <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/70 to-transparent p-3">
-        {participant.activeSpeaker && !participant.isLocal && (
-          <span
-            aria-label="Speaking"
-            className="flex animate-pulse items-center gap-1 rounded bg-live px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-black"
-          >
-            <span className="inline-block h-1.5 w-1.5 rounded-full bg-black" />
-            Speaking
-          </span>
-        )}
+        {/* Kept mounted so it fades in/out with the ring rather than popping in. `invisible`
+            (a transitionable discrete property) releases it from accessibility at the end of
+            the fade-out instead of mid-fade. */}
+        <span
+          aria-label="Speaking"
+          className={`flex animate-pulse items-center gap-1 rounded bg-live px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-black transition-all duration-150 ease-out ${
+            participant.activeSpeaker && !participant.isLocal
+              ? "translate-y-0 opacity-100"
+              : "invisible translate-y-1 opacity-0"
+          }`}
+        >
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-black" />
+          Speaking
+        </span>
         <span className={`truncate font-medium ${prominent ? "text-base" : "text-sm"}`}>
           {participant.displayName}
           {participant.isLocal && <span className="text-room-400"> (you)</span>}
