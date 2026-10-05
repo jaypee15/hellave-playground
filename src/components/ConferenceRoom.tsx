@@ -105,6 +105,12 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
   const [unread, setUnread] = useState(0);
   const [raisedHands, setRaisedHands] = useState<ReadonlySet<string>>(new Set());
   const [handRaised, setHandRaised] = useState(false);
+  /**
+   * Publishers the server reports as audio-stalled: their transport is alive but no audio
+   * is reaching the SFU, so nobody can hear them. Keyed by participant ID; entries clear
+   * when the server reports audio resumed. Same set mechanics as raised hands.
+   */
+  const [stalledPublishers, setStalledPublishers] = useState<ReadonlySet<string>>(new Set());
   const [activeSpeaker, setActiveSpeaker] = useState<string | null>(null);
   // Pending clear of activeSpeaker (set on a null event, cancelled by a new speaker). A ref
   // because the event handler is registered once inside the attach effect.
@@ -164,6 +170,14 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
       setCanModerateLobby(me.capabilities.moderateLobby);
       setCanControlRecording(me.capabilities.controlRecording);
     }
+    // Stall banners are keyed by participant: drop entries for anyone who left, so a
+    // departed peer's notice does not linger after their tile is gone.
+    setStalledPublishers((prev) => {
+      if (prev.size === 0) return prev;
+      const ids = new Set(snap.participants.map((p) => p.id));
+      const next = new Set([...prev].filter((id) => ids.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
   }, [peerId]);
 
   useEffect(() => {
@@ -296,6 +310,20 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
         conf.on("recordingChanged", (active, recordingId) => {
           setRecording({ active, recordingId });
           addEvent(active ? `Recording started (${recordingId ?? "no id"})` : "Recording stopped");
+        });
+
+        conf.on("publicationStalled", (ownerParticipantId, stalled) => {
+          setStalledPublishers((prev) => {
+            const next = new Set(prev);
+            if (stalled) next.add(ownerParticipantId);
+            else next.delete(ownerParticipantId);
+            return next;
+          });
+          addEvent(
+            stalled
+              ? `${ownerParticipantId} is not audible — audio is not reaching the server`
+              : `${ownerParticipantId} is audible again`,
+          );
         });
 
         conf.on("reactionReceived", (reaction) => {
@@ -798,6 +826,22 @@ raisedHands,
               </button>
             </div>
           )}
+          {[...stalledPublishers].map((stalledId) => {
+            const stalledName =
+              participants.find((p) => p.id === stalledId)?.displayName ?? stalledId;
+            const isSelf = stalledId === peerId;
+            return (
+              <div
+                key={stalledId}
+                data-testid="publisher-stall-notice"
+                className="mx-3 mb-2 rounded-lg bg-danger/15 px-3 py-2 text-sm font-medium text-danger ring-1 ring-danger/40 sm:mx-4"
+              >
+                {isSelf
+                  ? "Your microphone is not reaching the server — nobody can hear you. Check your mic or rejoin."
+                  : `${stalledName} is not audible — their audio is not reaching the server.`}
+              </div>
+            );
+          })}
           <VideoGrid participants={tiles} featuredId={spotlightOwner} view={view} />
           <ReactionOverlay reactions={floating} />
           {canModerateLobby && (
