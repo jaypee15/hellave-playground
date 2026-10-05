@@ -34,6 +34,22 @@
 import dgram from "node:dgram";
 
 /**
+ * Deterministic PRNG (mulberry32) so a shaped profile drops and jitters the same
+ * datagrams on every run for the same seed and packet order. Wall-clock delivery is
+ * still approximate — setTimeout is not exact — but the loss decisions are stable.
+ */
+function mulberry32(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state |= 0;
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
  * @param listenPort  where browsers send (the SFU's advertised port)
  * @param targetPort  where the SFU actually binds
  */
@@ -56,6 +72,52 @@ export function createPartitionRelay({
    * which address to name.
    */
   const blocked = new Set();
+  /**
+   * Per-flow shaped-network profiles: source port -> profile. A profile degrades one
+   * peer's path like a poor network instead of cutting it: probabilistic loss plus a
+   * base delay with uniform jitter, applied in both directions of that flow. Partition
+   * (block/allowOnly) still wins: a shaped datagram due for delivery is dropped on
+   * arrival if its port has since been blocked.
+   */
+  const profiles = new Map();
+
+  function shapeDelayMs(profile) {
+    if (profile.delayMs <= 0 && profile.jitterMs <= 0) return 0;
+    const jitter =
+      profile.jitterMs > 0 ? (profile.rng() * 2 - 1) * profile.jitterMs : 0;
+    return Math.max(0, profile.delayMs + jitter);
+  }
+
+  /**
+   * Deliver one datagram through the flow's profile, if any. Counters only move for
+   * datagrams actually handed to a socket, so `toSfu`/`toClient` stay comparable with
+   * unshaped runs and profile effects are visible separately in `profileStats()`.
+   */
+  function shapeSend(port, entry, send) {
+    const profile = profiles.get(port);
+    if (!profile) {
+      send();
+      return;
+    }
+    if (profile.lossPercent > 0 && profile.rng() * 100 < profile.lossPercent) {
+      entry.dropped += 1;
+      profile.shapedDropped += 1;
+      return;
+    }
+    const delay = shapeDelayMs(profile);
+    if (delay <= 0) {
+      send();
+      return;
+    }
+    profile.shapedDelayed += 1;
+    setTimeout(() => {
+      if (isDropped(port)) {
+        entry.dropped += 1;
+        return;
+      }
+      send();
+    }, delay);
+  }
   /**
    * When set, the ONLY source ports carried; every other flow is dropped.
    *
@@ -84,8 +146,10 @@ export function createPartitionRelay({
         entry.dropped += 1;
         return;
       }
-      entry.toClient += 1;
-      inbound.send(message, port, address);
+      shapeSend(port, entry, () => {
+        entry.toClient += 1;
+        inbound.send(message, port, address);
+      });
     });
     socket.on("error", () => {});
     clients.set(key, entry);
@@ -99,8 +163,10 @@ export function createPartitionRelay({
       entry.dropped += 1;
       return;
     }
-    entry.toSfu += 1;
-    entry.socket.send(message, targetPort, targetHost);
+    shapeSend(rinfo.port, entry, () => {
+      entry.toSfu += 1;
+      entry.socket.send(message, targetPort, targetHost);
+    });
   });
   inbound.on("error", () => {});
 
@@ -136,6 +202,52 @@ export function createPartitionRelay({
     unblockAll() {
       blocked.clear();
       allowlist = null;
+    },
+
+    /**
+     * Shape one flow like a poor network instead of cutting it.
+     *
+     * `lossPercent` drops that share of datagrams (0-100), `delayMs` holds every kept
+     * datagram that long, `jitterMs` spreads the hold uniformly over
+     * `delayMs ± jitterMs`, and `seed` makes the loss/jitter draws repeatable per port.
+     * Applies to both directions of the flow. Bandwidth shaping is deliberately out of
+     * scope: pacing UDP without per-flow queues turns the relay into a bottleneck rather
+     * than a network.
+     */
+    setFlowProfile(
+      port,
+      { lossPercent = 0, delayMs = 0, jitterMs = 0, seed = 1 } = {},
+    ) {
+      if (
+        !(lossPercent >= 0 && lossPercent <= 100) ||
+        !(delayMs >= 0) ||
+        !(jitterMs >= 0)
+      ) {
+        throw new Error(
+          `invalid flow profile: ${JSON.stringify({ lossPercent, delayMs, jitterMs, seed })}`,
+        );
+      }
+      profiles.set(port, {
+        lossPercent,
+        delayMs,
+        jitterMs,
+        rng: mulberry32(((seed * 2654435761) ^ port) >>> 0),
+        shapedDropped: 0,
+        shapedDelayed: 0,
+      });
+    },
+
+    /** Remove every flow profile; partitioning state is untouched. */
+    clearFlowProfiles() {
+      profiles.clear();
+    },
+
+    /** How many datagrams one flow's profile has dropped and delayed so far. */
+    profileStats(port) {
+      const profile = profiles.get(port);
+      return profile
+        ? { shapedDropped: profile.shapedDropped, shapedDelayed: profile.shapedDelayed }
+        : null;
     },
 
     /**
