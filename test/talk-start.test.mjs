@@ -148,19 +148,29 @@ const harness = createHarness({
 const relay = createPartitionRelay({ listenPort: RELAY_PORT, targetPort: SFU_PORT });
 
 /**
- * Force relayed ICE candidates on pages created afterwards. The SDK builds its own
- * RTCPeerConnection config, so the test wraps the constructor (test-only
- * instrumentation, direct mode never installs it). Installed via addInitScript before
- * the page navigates, next to the harness PC/WS spies.
+ * Force relayed ICE candidates on pages created afterwards, persistently. The SDK
+ * builds its own RTCPeerConnection config AND replaces it via setConfiguration when
+ * servers arrive — a constructor-only policy is silently dropped there, after which
+ * "relay-only" runs actually use direct pairs and prove nothing about TURN. So the
+ * wrapper pins the policy on every setConfiguration call too. Installed via
+ * addInitScript before the page navigates, next to the harness PC/WS spies
+ * (test-only instrumentation, direct mode never installs it).
  */
 const RELAY_ONLY_SPY = `
   (() => {
     const Prev = window.RTCPeerConnection;
     window.__forcedRelayConfigs = [];
+    const forceRelay = (pc) => {
+      const origSetConfiguration = pc.setConfiguration.bind(pc);
+      pc.setConfiguration = (config) =>
+        origSetConfiguration({ ...((config) || {}), iceTransportPolicy: "relay" });
+    };
     window.RTCPeerConnection = function (config, ...rest) {
       const merged = { ...(config || {}), iceTransportPolicy: "relay" };
       window.__forcedRelayConfigs.push(JSON.parse(JSON.stringify(merged)));
-      return new Prev(merged, ...rest);
+      const pc = new Prev(merged, ...rest);
+      forceRelay(pc);
+      return pc;
     };
     window.RTCPeerConnection.prototype = Prev.prototype;
     Object.assign(window.RTCPeerConnection, Prev);
