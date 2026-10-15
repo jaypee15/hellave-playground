@@ -423,6 +423,22 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
     setMuted(next);
     addEvent(next ? "Local mute on" : "Local mute off");
   };
+  // Full mic stop (track ends, RTP stops) — distinct from Local Mute, which keeps
+  // RTP flowing. Mirrors apps that stop the capture on mute, and exercises the
+  // SFU stall + republish path on unmute.
+  const handleStopMic = async () => {
+    if (!publication) return;
+    try {
+      await publication.stop();
+      addEvent("Microphone stopped");
+    } catch (err: unknown) {
+      addEvent(`Mic stop failed: ${err instanceof Error ? err.message : "Unknown"}`);
+    } finally {
+      setPublication(null);
+      setPublishing(false);
+      setMuted(false);
+    }
+  };
 
   const handleToggleCamera = async () => {
     if (!conference) return;
@@ -879,6 +895,7 @@ raisedHands,
           unreadCount={unread}
           onPublishMic={() => void handlePublish()}
           onToggleMute={handleMute}
+          onStopMic={() => void handleStopMic()}
           onToggleCamera={() => void handleToggleCamera()}
           onToggleScreen={() => void handleToggleScreen()}
           onToggleHand={handleToggleHand}

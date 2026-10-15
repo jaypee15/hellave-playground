@@ -25,6 +25,7 @@ interface Props {
   unreadCount: number;
   onPublishMic: () => void;
   onToggleMute: () => void;
+  onStopMic: () => void;
   onToggleCamera: () => void;
   onToggleScreen: () => void;
   onToggleHand: () => void;
@@ -106,6 +107,14 @@ export default function ControlBar(props: Props) {
           testId="mute"
         />
       )}
+      {props.publishing ? (
+        <ControlButton
+          label="Stop Mic"
+          icon="🛑"
+          onClick={props.onStopMic}
+          testId="stop-mic"
+        />
+      ) : null}
 
       <ControlButton
         label={props.cameraOn ? "Stop camera" : "Start camera"}
