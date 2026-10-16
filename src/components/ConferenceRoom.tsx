@@ -608,6 +608,57 @@ export default function ConferenceRoom({ client, roomId, roomInstanceId, peerId,
   );
 
   /** Received video as `source:publicationId`, for the header diagnostic and the debug drawer. */
+  const collectDiagnostics = useCallback(async () => {
+    const pcs = (window as unknown as { __hellavePCs?: RTCPeerConnection[] }).__hellavePCs ?? [];
+    const transports = await Promise.all(pcs.map(async (pc, index) => {
+      let outboundAudio: Array<Record<string, unknown>> = [];
+      try {
+        const stats = await pc.getStats();
+        stats.forEach((stat) => {
+          if (stat.type === "outbound-rtp" && (stat as RTCOutboundRtpStreamStats).kind === "audio") {
+            const s = stat as RTCOutboundRtpStreamStats;
+            outboundAudio.push({ packetsSent: s.packetsSent, bytesSent: s.bytesSent });
+          }
+        });
+      } catch {
+        outboundAudio = [];
+      }
+      return {
+        index,
+        connectionState: pc.connectionState,
+        iceConnectionState: pc.iceConnectionState,
+        signalingState: pc.signalingState,
+        audioSenders: pc.getSenders().filter((s) => s.track?.kind === "audio").map((s) => ({
+          trackEnabled: s.track?.enabled ?? null,
+          trackMuted: s.track?.muted ?? null,
+          trackReadyState: s.track?.readyState ?? null,
+        })),
+        outboundAudio,
+      };
+    }));
+    let clientDiagnostics: unknown = null;
+    try {
+      clientDiagnostics = conference ? await conference.requestDiagnostics() : null;
+    } catch {
+      clientDiagnostics = null;
+    }
+    return JSON.stringify({
+      at: new Date().toISOString(),
+      roomId,
+      roomInstanceId,
+      peerId,
+      conferenceState: conference?.state ?? null,
+      localMuted: muted,
+      publications: conference?.snapshot.publications.map((pub) => ({
+        id: pub.id,
+        source: publicationSources.get(pub.id) ?? "unknown",
+        ownerParticipantId: pub.ownerParticipantId,
+      })) ?? [],
+      clientDiagnostics,
+      transports,
+      recentEvents: eventsRef.current.slice(-20),
+    }, null, 1);
+  }, [conference, muted, roomId, roomInstanceId, peerId, publicationSources]);
   const receivedVideoIds = useMemo(
     () => remoteVideo.map(
       (track) => `${publicationSources.get(track.publicationId) ?? "unknown"}:${track.publicationId}`,
@@ -798,6 +849,7 @@ raisedHands,
           spotlight={spotlight}
           raisedHands={[...raisedHands]}
           receivedVideo={receivedVideoIds}
+          onCopyDiagnostics={collectDiagnostics}
         />
       </header>
 

@@ -16,6 +16,12 @@ interface Props {
    * sent or merely never rendered.
    */
   receivedVideo: readonly string[];
+  /**
+   * Collect a JSON diagnostics snapshot (transport, publications, sender
+   * tracks) for clipboard export. Provided by the room; captures the exact
+   * client-side state behind "nobody can hear me" reports.
+   */
+  onCopyDiagnostics: () => Promise<string>;
 }
 
 /**
@@ -33,8 +39,10 @@ export default function DebugDrawer({
   spotlight,
   raisedHands,
   receivedVideo,
+  onCopyDiagnostics,
 }: Props) {
   const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -82,6 +90,26 @@ export default function DebugDrawer({
           </dl>
 
           <div className="border-t border-room-700 pt-2">
+            <button
+              type="button"
+              data-testid="copy-diagnostics"
+              aria-label="Copy diagnostics snapshot"
+              title="Copy a JSON snapshot of transport, publications and sender tracks"
+              onClick={() => {
+                void onCopyDiagnostics().then(async (text) => {
+                  try {
+                    await navigator.clipboard.writeText(text);
+                  } catch {
+                    return;
+                  }
+                  setCopied(true);
+                  window.setTimeout(() => setCopied(false), 2_000);
+                });
+              }}
+              className="mb-2 shrink-0 rounded-lg bg-room-800 px-2.5 py-1.5 text-xs font-medium text-room-400 transition-colors hover:bg-room-700 hover:text-room-200"
+            >
+              {copied ? "Copied" : "Copy diagnostics"}
+            </button>
             {events.length === 0 && <div className="text-room-600">No events yet</div>}
             {events.map((event, index) => (
               <div key={index} className="leading-relaxed">
