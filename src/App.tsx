@@ -89,7 +89,7 @@ export default function App() {
     const res = await fetch("/api/join-room", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ roomInstanceId, displayName, lobby: true }),
+      body: JSON.stringify({ roomInstanceId, displayName, lobby: false }),
     });
     if (!res.ok) {
       const err = await res.json();
@@ -98,7 +98,7 @@ export default function App() {
     const { roomId, peerId, controlUrl } = await res.json();
     const config: HellaveConfig = {
       controlUrl,
-      tokenProvider: tokenRefresher(roomInstanceId, displayName, peerId, "participant", true),
+      tokenProvider: tokenRefresher(roomInstanceId, displayName, peerId, "host", false),
     };
     const client = new HellaveClient(config);
     showRoomInAddressBar(roomInstanceId);
